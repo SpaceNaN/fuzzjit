@@ -1,0 +1,376 @@
+// Copyright 2020 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package fuzzilli.protobuf;
+
+import "typesystem.proto";
+
+message LoadInteger {
+    int64 value = 1;
+}
+
+message LoadBigInt {
+    int64 value = 1;
+}
+
+message LoadFloat {
+    double value = 1;
+}
+
+message LoadString {
+    string value = 1;
+}
+
+message LoadBoolean {
+    bool value = 1;
+}
+
+message LoadUndefined {
+}
+
+message LoadNull {
+}
+
+message LoadRegExp {
+    string value = 1;
+    uint32 flags = 2;
+}
+
+message CreateObject {
+    repeated string propertyNames = 1;
+}
+
+message CreateArray {
+}
+
+message CreateObjectWithSpread {
+    repeated string propertyNames = 1;
+}
+
+message CreateArrayWithSpread {
+    repeated bool spreads = 1;
+}
+
+message LoadBuiltin {
+    string builtinName = 1;
+}
+
+message LoadProperty {
+    string propertyName = 1;
+}
+
+message StoreProperty {
+    string propertyName = 1;
+}
+
+message DeleteProperty {
+    string propertyName = 1;
+}
+
+message LoadElement {
+    int64 index = 1;
+}
+
+message StoreElement {
+    int64 index = 1;
+}
+
+message DeleteElement {
+    int64 index = 1;
+}
+
+message LoadComputedProperty {
+}
+
+message StoreComputedProperty {
+}
+
+message DeleteComputedProperty {
+}
+
+message TypeOf {
+}
+
+message InstanceOf {
+}
+
+message In {
+}
+
+message BeginPlainFunctionDefinition {
+    FunctionSignature signature = 1;
+}
+
+message EndPlainFunctionDefinition {
+}
+
+message BeginStrictFunctionDefinition {
+    FunctionSignature signature = 1;
+}
+
+message EndStrictFunctionDefinition {
+}
+
+message BeginArrowFunctionDefinition {
+    FunctionSignature signature = 1;
+}
+
+message EndArrowFunctionDefinition {
+}
+
+message BeginGeneratorFunctionDefinition {
+    FunctionSignature signature = 1;
+}
+
+message EndGeneratorFunctionDefinition {
+}
+
+message BeginAsyncFunctionDefinition {
+    FunctionSignature signature = 1;
+}
+
+message EndAsyncFunctionDefinition {
+}
+
+message BeginAsyncArrowFunctionDefinition {
+    FunctionSignature signature = 1;
+}
+
+message EndAsyncArrowFunctionDefinition {
+}
+
+message BeginAsyncGeneratorFunctionDefinition {
+    FunctionSignature signature = 1;
+}
+
+message EndAsyncGeneratorFunctionDefinition {
+}
+
+message Return {
+}
+
+message Yield {
+}
+
+message YieldEach {
+}
+
+message Await {
+}
+
+message CallMethod {
+    string methodName = 1;
+}
+
+message CallComputedMethod {
+}
+
+message CallFunction {
+}
+
+message Construct {
+}
+
+message CallFunctionWithSpread {
+    repeated bool spreads = 1;
+}
+
+enum UnaryOperator {
+    PRE_INC = 0;
+    PRE_DEC = 1;
+    POST_INC = 2;
+    POST_DEC = 3;
+    LOGICAL_NOT = 4;
+    BITWISE_NOT = 5;
+    PLUS = 6;
+    MINUS = 7;
+}
+
+message UnaryOperation {
+    UnaryOperator op = 1;
+}
+
+enum BinaryOperator {
+    ADD = 0;
+    SUB = 1;
+    MUL = 2;
+    DIV = 3;
+    MOD = 4;
+    BIT_AND = 5;
+    BIT_OR = 6;
+    LOGICAL_AND = 7;
+    LOGICAL_OR = 8;
+    XOR = 9;
+    LSHIFT = 10;
+    RSHIFT = 11;
+    EXP = 12;
+    UNRSHIFT = 13;
+}
+
+message BinaryOperation {
+    BinaryOperator op = 1;
+}
+
+message Dup {
+}
+
+message Reassign {
+}
+
+enum Comparator {
+    EQUAL = 0;
+    STRICT_EQUAL = 1;
+    NOT_EQUAL = 2;
+    STRICT_NOT_EQUAL = 3;
+    LESS_THAN = 4;
+    LESS_THAN_OR_EQUAL = 5;
+    GREATER_THAN = 6;
+    GREATER_THAN_OR_EQUAL = 7;
+}
+
+message Compare {
+    Comparator op = 1;
+}
+
+message ConditionalOperation {
+}
+
+
+message Eval {
+    string code = 1;
+}
+
+message BeginClassDefinition {
+    bool hasSuperclass = 1;
+    repeated Type constructorParameters = 2;
+    repeated string instanceProperties = 3;
+    repeated string instanceMethodNames = 4;
+    repeated FunctionSignature instanceMethodSignatures = 5;
+}
+
+message BeginMethodDefinition {
+    uint32 numParameters = 1;
+}
+
+message EndClassDefinition {
+}
+
+message CallSuperConstructor {
+}
+
+message CallSuperMethod {
+    string methodName = 1;
+}
+
+message LoadSuperProperty {
+    string propertyName = 1;
+}
+
+message StoreSuperProperty {
+    string propertyName = 1;
+}
+
+message BeginWith {
+}
+
+message EndWith {
+}
+
+message LoadFromScope {
+    string id = 1;
+}
+
+message StoreToScope {
+    string id = 1;
+}
+
+message BeginIf {
+}
+
+message BeginElse {
+}
+
+message EndIf {
+}
+
+message BeginWhile {
+    Comparator comparator = 1;
+}
+
+message EndWhile {
+}
+
+message BeginDoWhile {
+    Comparator comparator = 1;
+}
+
+message EndDoWhile {
+}
+
+message BeginFor {
+    Comparator comparator = 1;
+    BinaryOperator op = 2;
+}
+
+message EndFor {
+}
+
+message BeginForIn {
+}
+
+message EndForIn {
+}
+
+message BeginForOf {
+}
+
+message EndForOf {
+}
+
+message Break {
+}
+
+message Continue {
+}
+
+message BeginTry {
+}
+
+message BeginCatch {
+}
+
+message BeginFinally {
+}
+
+message EndTryCatch {
+}
+
+message ThrowException {
+}
+
+message BeginCodeString {
+}
+
+message EndCodeString {
+}
+
+message BeginBlockStatement {
+}
+
+message EndBlockStatement {
+}
+
+message Nop {
+}

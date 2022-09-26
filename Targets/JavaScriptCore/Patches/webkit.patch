@@ -1,0 +1,353 @@
+diff --git a/Source/JavaScriptCore/jsc.cpp b/Source/JavaScriptCore/jsc.cpp
+index fb10d663051..443f20eb0b8 100644
+--- a/Source/JavaScriptCore/jsc.cpp
++++ b/Source/JavaScriptCore/jsc.cpp
+@@ -165,7 +165,96 @@ struct MemoryFootprint {
+ #if !defined(PATH_MAX)
+ #define PATH_MAX 4096
+ #endif
++//
++// BEGIN FUZZING CODE
++//
++
++#include <fcntl.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/wait.h>
++#include <sys/mman.h>
++
++#define REPRL_CRFD 100
++#define REPRL_CWFD 101
++#define REPRL_DRFD 102
++#define REPRL_DWFD 103
++#define REPRL_MAX_DATA_SIZE (16*1024*1024)
++
++#define SHM_SIZE 0x100000
++#define MAX_EDGES ((SHM_SIZE - 4) * 8)
++
++#define CHECK(cond) if (!(cond)) { fprintf(stderr, "\"" #cond "\" failed\n"); exit(EXIT_FAILURE); }
++
++// Shared memory buffer with the parent.
++char* reprl_input_data;
++
++struct shmem_data {
++    uint32_t num_edges;
++    unsigned char edges[];
++};
++
++struct shmem_data* __shmem;
++uint32_t *__edges_start, *__edges_stop;
++
++void __sanitizer_cov_reset_edgeguards() {
++    uint64_t N = 0;
++    for (uint32_t *x = __edges_start; x < __edges_stop && N < MAX_EDGES; x++)
++        *x = ++N;
++}
++
++extern "C" void __sanitizer_cov_trace_pc_guard_init(uint32_t *start, uint32_t *stop) {
++    // Avoid duplicate initialization
++    if (start == stop || *start)
++        return;
++
++    if (__edges_start != NULL || __edges_stop != NULL) {
++        fprintf(stderr, "Coverage instrumentation is only supported for a single module\n");
++        _exit(-1);
++    }
++
++    __edges_start = start;
++    __edges_stop = stop;
++
++    // Map the shared memory region
++    const char* shm_key = getenv("SHM_ID");
++    if (!shm_key) {
++        puts("[COV] no shared memory bitmap available, skipping");
++        __shmem = (struct shmem_data*) malloc(SHM_SIZE);
++    } else {
++        int fd = shm_open(shm_key, O_RDWR, S_IREAD | S_IWRITE);
++        if (fd <= -1) {
++            fprintf(stderr, "Failed to open shared memory region: %s\n", strerror(errno));
++            _exit(-1);
++        }
++
++        __shmem = (struct shmem_data*) mmap(0, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++        if (__shmem == MAP_FAILED) {
++            fprintf(stderr, "Failed to mmap shared memory region\n");
++            _exit(-1);
++        }
++    }
++
++    __sanitizer_cov_reset_edgeguards();
+
++    __shmem->num_edges = stop - start;
++    printf("[COV] edge counters initialized. Shared memory: %s with %u edges\n", shm_key, __shmem->num_edges);
++}
++
++extern "C" void __sanitizer_cov_trace_pc_guard(uint32_t *guard) {
++    // There's a small race condition here: if this function executes in two threads for the same
++    // edge at the same time, the first thread might disable the edge (by setting the guard to zero)
++    // before the second thread fetches the guard value (and thus the index). However, our
++    // instrumentation ignores the first edge (see libcoverage.c) and so the race is unproblematic.
++    uint32_t index = *guard;
++    __shmem->edges[index / 8] |= 1 << (index % 8);
++    *guard = 0;
++}
++
++//
++// END FUZZING CODE
++//
+ using namespace JSC;
+
+ namespace {
+@@ -380,6 +469,7 @@ static JSC_DECLARE_HOST_FUNCTION(functionFlashHeapAccess);
+ static JSC_DECLARE_HOST_FUNCTION(functionDisableRichSourceInfo);
+ static JSC_DECLARE_HOST_FUNCTION(functionMallocInALoop);
+ static JSC_DECLARE_HOST_FUNCTION(functionTotalCompileTime);
++static JSC_DECLARE_HOST_FUNCTION(functionFuzzilli);
+
+ static JSC_DECLARE_HOST_FUNCTION(functionSetUnhandledRejectionCallback);
+ static JSC_DECLARE_HOST_FUNCTION(functionAsDoubleNumber);
+@@ -399,7 +489,8 @@ struct Script {
+
+     enum class CodeSource {
+         File,
+-        CommandLine
++        CommandLine,
++        REPRL
+     };
+
+     StrictMode strictMode;
+@@ -433,6 +524,7 @@ public:
+     String m_profilerOutput;
+     String m_uncaughtExceptionName;
+     bool m_interactive { false };
++    bool m_reprl { false };
+     bool m_dump { false };
+     bool m_module { false };
+     bool m_exitCode { false };
+@@ -679,6 +771,8 @@ private:
+         addFunction(vm, "mallocInALoop", functionMallocInALoop, 0);
+         addFunction(vm, "totalCompileTime", functionTotalCompileTime, 0);
+
++        addFunction(vm, "fuzzilli", functionFuzzilli, 2);
++
+         addFunction(vm, "setUnhandledRejectionCallback", functionSetUnhandledRejectionCallback, 1);
+
+         addFunction(vm, "asDoubleNumber", functionAsDoubleNumber, 1);
+@@ -727,6 +821,7 @@ private:
+     static Identifier moduleLoaderResolve(JSGlobalObject*, JSModuleLoader*, JSValue, JSValue, JSValue);
+     static JSInternalPromise* moduleLoaderFetch(JSGlobalObject*, JSModuleLoader*, JSValue, JSValue, JSValue);
+     static JSObject* moduleLoaderCreateImportMetaProperties(JSGlobalObject*, JSModuleLoader*, JSValue, JSModuleRecord*, JSValue);
++    static void promiseRejectionTracker(JSGlobalObject*, JSPromise*, JSPromiseRejectionOperation);
+
+     static void reportUncaughtExceptionAtEventLoop(JSGlobalObject*, Exception*);
+ };
+@@ -750,7 +845,8 @@ const GlobalObjectMethodTable GlobalObject::s_globalObjectMethodTable = {
+     &moduleLoaderFetch,
+     &moduleLoaderCreateImportMetaProperties,
+     nullptr, // moduleLoaderEvaluate
+-    nullptr, // promiseRejectionTracker
++    // nullptr, // promiseRejectionTracker
++    &promiseRejectionTracker,
+     &reportUncaughtExceptionAtEventLoop,
+     &currentScriptExecutionOwner,
+     &scriptExecutionStatus,
+@@ -1244,6 +1340,19 @@ JSObject* GlobalObject::moduleLoaderCreateImportMetaProperties(JSGlobalObject* g
+     return metaProperties;
+ }
+
++static int numPendingRejectedPromises = 0;
++void GlobalObject::promiseRejectionTracker(JSGlobalObject*, JSPromise*, JSPromiseRejectionOperation operation) {
++    switch (operation) {
++    case JSPromiseRejectionOperation::Reject:
++        numPendingRejectedPromises += 1;
++        break;
++    case JSPromiseRejectionOperation::Handle:
++        numPendingRejectedPromises -= 1;
++        break;
++    }
++}
++
++
+ template <typename T>
+ static CString toCString(JSGlobalObject* globalObject, ThrowScope& scope, T& string)
+ {
+@@ -1266,6 +1375,8 @@ static CString toCString(JSGlobalObject* globalObject, ThrowScope& scope, T& str
+     return { };
+ }
+
++
++
+ static EncodedJSValue printInternal(JSGlobalObject* globalObject, CallFrame* callFrame, FILE* out, bool pretty)
+ {
+     VM& vm = globalObject->vm();
+@@ -1314,6 +1425,56 @@ JSC_DEFINE_HOST_FUNCTION(functionPrettyPrint, (JSGlobalObject* globalObject, Cal
+     return printInternal(globalObject, callFrame, stdout, true);
+ }
+
++// We have to assume that the fuzzer will be able to call this function e.g. by
++// enumerating the properties of the global object and eval'ing them. As such
++// this function is implemented in a way that requires passing some magic value
++// as first argument (with the idea being that the fuzzer won't be able to
++// generate this value) which then also acts as a selector for the operation
++// to perform.
++JSC_DEFINE_HOST_FUNCTION(functionFuzzilli, (JSGlobalObject* globalObject, CallFrame* callFrame))
++{
++    VM& vm = globalObject->vm();
++    auto scope = DECLARE_THROW_SCOPE(vm);
++    if (!callFrame->argument(0).isString()) {
++        // We directly require a string as argument for simplicity
++        return JSValue::encode(jsUndefined());
++    }
++    auto operation = callFrame->argument(0).toString(globalObject)->value(globalObject);
++    RETURN_IF_EXCEPTION(scope, encodedJSValue());
++
++    if (operation == "FUZZILLI_CRASH") {
++        auto arg = callFrame->argument(1).toInt32(globalObject);
++        RETURN_IF_EXCEPTION(scope, encodedJSValue());
++        switch (arg) {
++            case 0:
++                *((int*)0x41414141) = 0x1337;
++                break;
++            case 1:
++                RELEASE_ASSERT(0);
++                break;
++            case 2:
++                ASSERT(0);
++                break;
++        }
++    } else if (operation == "FUZZILLI_PRINT") {
++        static FILE* fzliout = fdopen(REPRL_DWFD, "w");
++        if (!fzliout) {
++            fprintf(stderr, "Fuzzer output channel not available, printing to stdout instead\n");
++            fzliout = stdout;
++        }
++
++        auto viewWithString = callFrame->argument(1).toString(globalObject)->viewWithUnderlyingString(globalObject);
++        RETURN_IF_EXCEPTION(scope, encodedJSValue());
++        auto string = toCString(globalObject, scope, viewWithString.view);
++        RETURN_IF_EXCEPTION(scope, encodedJSValue());
++        fprintf(fzliout, "%s\n", string.data());
++        fflush(fzliout);
++    }
++
++    return JSValue::encode(jsUndefined());
++}
++
++
+ JSC_DEFINE_HOST_FUNCTION(functionDebug, (JSGlobalObject* globalObject, CallFrame* callFrame))
+ {
+     VM& vm = globalObject->vm();
+@@ -3166,7 +3327,16 @@ static void runWithOptions(GlobalObject* globalObject, CommandLine& options, boo
+     for (size_t i = 0; i < scripts.size(); i++) {
+         JSInternalPromise* promise = nullptr;
+         bool isModule = options.m_module || scripts[i].scriptType == Script::ScriptType::Module;
+-        if (scripts[i].codeSource == Script::CodeSource::File) {
++        // if (scripts[i].codeSource == Script::CodeSource::File) {
++        if (scripts[i].codeSource == Script::CodeSource::REPRL) {
++            size_t script_size;
++            CHECK(read(REPRL_CRFD, &script_size, 8) == 8);
++            CHECK(script_size < REPRL_MAX_DATA_SIZE);
++            scriptBuffer.resize(script_size);
++            char* ptr = scriptBuffer.data();
++            memcpy(ptr, reprl_input_data, script_size);
++            fileName = "[REPRL]"_s;
++        } else if (scripts[i].codeSource == Script::CodeSource::File) {
+             fileName = scripts[i].argument;
+             if (scripts[i].strictMode == Script::StrictMode::Strict)
+                 scriptBuffer.append("\"use strict\";\n", strlen("\"use strict\";\n"));
+@@ -3321,6 +3491,7 @@ static NO_RETURN void printUsageStatement(bool help = false)
+     fprintf(stderr, "  -f         Specifies a source file (deprecated)\n");
+     fprintf(stderr, "  -h|--help  Prints this help message\n");
+     fprintf(stderr, "  -i         Enables interactive mode (default if no files are specified)\n");
++    fprintf(stderr, "  --reprl    Enables REPRL mode (used by the Fuzzilli fuzzer)\n");
+     fprintf(stderr, "  -m         Execute as a module\n");
+ #if OS(UNIX)
+     fprintf(stderr, "  -s         Installs signal handlers that exit on a crash (Unix platforms only, lldb will not work with this option) \n");
+@@ -3406,6 +3577,11 @@ void CommandLine::parseArguments(int argc, char** argv)
+             m_interactive = true;
+             continue;
+         }
++        if (!strcmp(arg, "--reprl")) {
++            m_reprl = true;
++            m_scripts.append(Script(Script::StrictMode::Sloppy, Script::CodeSource::REPRL, Script::ScriptType::Script, nullptr));
++            continue;
++        }
+         if (!strcmp(arg, "-d")) {
+             m_dump = true;
+             continue;
+@@ -3596,7 +3772,38 @@ int runJSC(const CommandLine& options, bool isWorker, const Func& func)
+ #endif
+
+     int result;
+-    bool success = true;
++    // bool success = true;
++    bool success;
++
++    // Let parent know we are ready
++    if (options.m_reprl) {
++        char helo[] = "HELO";
++        CHECK(write(REPRL_CWFD, helo, 4) == 4);
++        CHECK(read(REPRL_CRFD, helo, 4) == 4);
++
++        if (memcmp(helo, "HELO", 4) != 0) {
++            fprintf(stderr, "[REPRL] Invalid response from parent\n");
++            exit(EXIT_FAILURE);
++        }
++
++        // Mmap the data input buffer.
++        reprl_input_data = (char*)mmap(0, REPRL_MAX_DATA_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, REPRL_DRFD, 0);
++        CHECK(reprl_input_data != MAP_FAILED);
++    }
++
++    do {
++    // Keep indention for easier diffing
++    if (options.m_reprl) {
++        unsigned action;
++        CHECK(read(REPRL_CRFD, &action, 4) == 4);
++        if (action != 'cexe') {
++            fprintf(stderr, "[REPRL] Unknown action: %u\n", action);
++            exit(EXIT_FAILURE);
++        }
++    }
++
++    success = true;
++
+     GlobalObject* globalObject = nullptr;
+     {
+         JSLockHolder locker(vm);
+@@ -3610,7 +3817,8 @@ int runJSC(const CommandLine& options, bool isWorker, const Func& func)
+     vm.deferredWorkTimer->runRunLoop();
+     {
+         JSLockHolder locker(vm);
+-        if (options.m_interactive && success)
++        // if (options.m_interactive && success)
++        if (!options.m_reprl && options.m_interactive && success)
+             runInteractive(globalObject);
+     }
+
+@@ -3679,6 +3887,23 @@ int runJSC(const CommandLine& options, bool isWorker, const Func& func)
+         dataLogLn(*vm.jitSizeStatistics);
+ #endif
+
++    if (options.m_reprl) {
++        // In REPRL mode, stdout and stderr may be regular files, so we need to fflush them here.
++        fflush(stdout);
++        fflush(stderr);
++
++        // Check if any rejected promises weren't handled
++        if (numPendingRejectedPromises > 0) {
++            result = 1;
++            numPendingRejectedPromises = 0;
++        }
++
++        int status = (result & 0xff) << 8;
++        CHECK(write(REPRL_CWFD, &status, 4) == 4);
++        __sanitizer_cov_reset_edgeguards();
++    }
++    } while (options.m_reprl);
++
+     vm.codeCache()->write(vm);
+
+     if (options.m_destroyVM || isWorker) {
+
