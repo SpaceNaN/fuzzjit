@@ -23,15 +23,33 @@ The running procedure of FuzzJIT is the same with Fuzzilli.
 1. download swift from the swift download page: https://www.swift.org/download/.
 
 ```
-wget https://download.swift.org/swift-5.7-release/ubuntu2204-aarch64/swift-5.7-RELEASE/swift-5.7-RELEASE-ubuntu22.04-aarch64.tar.gz
+wget https://download.swift.org/swift-5.7-release/ubuntu2204/swift-5.7-RELEASE/swift-5.7-RELEASE-ubuntu22.04.tar.gz
 ```
 2. uncompress the downloaded file.
 ```
-tar zxvf ./swift-5.7-RELEASE-ubuntu22.04-aarch64.tar.gz
+tar zxvf ./swift-5.7-RELEASE-ubuntu22.04.tar.gz
 ```
 3. export path of swift.
 ```
-export PATH=~/swift-5.7-RELEASE-ubuntu22.04-aarch64/usr/bin:${PATH}
+export PATH=~/swift-5.7-RELEASE-ubuntu22.04/usr/bin:${PATH}
+```
+4. check if swift is working.
+```
+swift --version
+```
+It should output:
+
+Swift version 5.7 (swift-5.7-RELEASE)
+Target: x86_64-unknown-linux-gnu
+
+## Installation
+
+1. download FuzzJIT from GitHub.
+```
+git clone https://github.com/SpaceNaN/fuzzjit
 ```
 
-## 
+2. Compile the FuzzJIT.
+```
+swift build [-c release]
+```
