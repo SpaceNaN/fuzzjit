@@ -16,3 +16,15 @@ The paper is accepted by USENIX Security 2023.
 }
 ```
 
+## Set up
+
+The running procedure of FuzzJIT is the same with Fuzzilli.
+
+1. download swift from the swift download page: https://www.swift.org/download/.
+
+```
+wget https://download.swift.org/swift-5.7-release/ubuntu2204-aarch64/swift-5.7-RELEASE/swift-5.7-RELEASE-ubuntu22.04-aarch64.tar.gz
+```
+
+
+## 
