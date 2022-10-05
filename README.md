@@ -70,9 +70,9 @@ remark: Incremental compilation has been disabled: it is not compatible with who
 Build complete! (39.76s)
 ```
 
-## Fuzz JavaScriptCore
+## Fuzzing JavaScriptCore
 
-Fuzz JavaScriptCore with FuzzJIT.
+To fuzz JavaScriptCore with FuzzJIT.
 
 1. download JavaScriptCore.
 ```
@@ -81,6 +81,7 @@ git clone https://github.com/WebKit/webkit
 2. Apply Targets/JavaScriptCore/Patches/*.
 
 This step will be a little bit tricky.
+
 When the version does not match, the user needs to manualy apply the patch.
 
 3. Run the Targets/JavaScriptCore/fuzzbuild.sh script in the webkit root directory.
@@ -92,3 +93,37 @@ When the version does not match, the user needs to manualy apply the patch.
 swift run -c release FuzzilliCli --profile=jsc --timeout=500 --storagePath=./jsc/ /path/to/webkit/FuzzBuild/Debug/bin/jsc
 ```
 
+## Fuzzing V8
+
+To fuzz V8 with FuzzJIT.
+
+1. On Linux, first install Git and then depot_tools.
+```
+git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+```
+
+2. export depot_tools.
+```
+export PATH=$PATH:/path/to/depot_tools
+```
+
+3. configure gclient.
+```
+mkdir v8
+cd v8
+gclient config https://chromium.googlesource.com/v8/v8
+```
+
+4. synchronize v8
+```
+gclient sync
+```
+
+5. Run the Targets/V8/fuzzbuild.sh script in the v8 root directory.
+
+6. out/fuzzbuild/d8 will be the JavaScript shell for the fuzzer
+
+7. fuzz V8.
+```
+swift run -c release FuzzilliCli --profile=v8 --timeout=500 --storagePath=./v8/ /path/to/v8/out/fuzzbuild/d8
+```
