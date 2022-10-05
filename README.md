@@ -25,6 +25,13 @@ The running procedure of FuzzJIT is the same with Fuzzilli.
 ```
 wget https://download.swift.org/swift-5.7-release/ubuntu2204-aarch64/swift-5.7-RELEASE/swift-5.7-RELEASE-ubuntu22.04-aarch64.tar.gz
 ```
-
+2. uncompress the downloaded file.
+```
+tar zxvf ./swift-5.7-RELEASE-ubuntu22.04-aarch64.tar.gz
+```
+3. export path of swift.
+```
+export PATH=~/swift-5.7-RELEASE-ubuntu22.04-aarch64/usr/bin:${PATH}
+```
 
 ## 
