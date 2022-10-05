@@ -74,7 +74,7 @@ Build complete! (39.76s)
 
 To fuzz JavaScriptCore with FuzzJIT.
 
-1. download JavaScriptCore.
+1. download JavaScriptCore source code.
 ```
 git clone https://github.com/WebKit/webkit
 ```
@@ -126,4 +126,27 @@ gclient sync
 7. fuzz V8.
 ```
 swift run -c release FuzzilliCli --profile=v8 --timeout=500 --storagePath=./v8/ /path/to/v8/out/fuzzbuild/d8
+```
+
+## Fuzzing Spidermonkey
+
+To fuzz Spidermonkey with FuzzJIT.
+
+1. download Spidermonkey source code.
+```
+git clone https://github.com/mozilla/gecko-dev
+```
+2. Apply Targets/Spidermonkey/Patches/*.
+
+This step will be a little bit tricky.
+
+When the version does not match, the user needs to manualy apply the patch.
+
+3. Run the Targets/Spidermonkey/fuzzbuild.sh script in the js/src directory of the firefox checkout.
+
+4. ./fuzzbuild_OPT.OBJ/dist/bin/js will be the JavaScript shell for the fuzzer.
+
+5. fuzz Spidermonkey.
+```
+swift run -c release FuzzilliCli --profile=spidermonkey --timeout=500 --storagePath=./spidermonkey/ /path/to/gecko-dev/js/src/fuzzbuild_OPT.OBJ/dist/bin/js
 ```
