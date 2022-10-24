@@ -4,12 +4,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL=bash
 
 RUN apt-get -y update && apt-get -y upgrade
-RUN apt-get install -y git cmake clang-10 ruby libicu-dev
+RUN apt-get install -y git cmake clang ruby python3-dev
+# The swift image has a modified libicu in /usr/include/unicode which sets a custom U_LIB_SUFFIX_C_NAME (to "_swift"),
+# causing build failures in JSC. Reinstall libicu-dev to fix that.
+RUN apt-get reinstall libicu-dev
 
 RUN useradd -m builder
 
 # Fetch WebKit source code
-RUN git clone git://git.webkit.org/WebKit-https.git /home/builder/webkit
+RUN git clone https://github.com/WebKit/WebKit.git /home/builder/webkit
 WORKDIR /home/builder/webkit
 
 # Docker will attempt to cache the output of every step. That's fine (and useful to speed things up, e.g. by avoiding

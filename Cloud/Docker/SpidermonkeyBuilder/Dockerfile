@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL=bash
 
 RUN apt-get -y update && apt-get -y upgrade
-RUN apt-get install -y git python3 python3-pip python3-virtualenv clang-10
+RUN apt-get install -y git python3 python3-pip python3-virtualenv
 
 RUN useradd -m builder
 
@@ -27,12 +27,12 @@ RUN git pull
 RUN git checkout $rev
 
 # Prepare for building
-RUN ./mach bootstrap --application-choice=browser --no-interactive
+RUN ./mach bootstrap --application-choice=js
 
 # Upload and apply patches
 ADD Patches Patches
 RUN for i in `ls Patches`; do patch -p1 < Patches/$i; done
 
 # Start building!
-ADD fuzzbuild.sh js/src/fuzzbuild.sh
-RUN cd js/src && ./fuzzbuild.sh
+ADD fuzzbuild.sh fuzzbuild.sh
+RUN ./fuzzbuild.sh
