@@ -92,9 +92,9 @@ The fuzzer is implemented in [Swift](https://swift.org/), with some parts (e.g. 
 
 A fuzzer instance (implemented in [Fuzzer.swift](Sources/Fuzzilli/Fuzzer.swift)) is made up of the following central components:
 
-* [MutationFuzzer](Sources/Fuzzilli/Core/MutationFuzzer.swift): produces new programs from existing ones by applying [mutations](Sources/Fuzzilli/Mutators). Afterwards executes the produced samples and evaluates them.
+* [MutationFuzzer](Sources/Fuzzilli/Core/MutationEngine.swift): produces new programs from existing ones by applying [mutations](Sources/Fuzzilli/Mutators). Afterwards executes the produced samples and evaluates them.
 * [ScriptRunner](Sources/Fuzzilli/Execution): executes programs of the target language.
-* [Corpus](Sources/Fuzzilli/Core/Corpus.swift): stores interesting samples and supplies them to the core fuzzer.
+* [Corpus](Sources/Fuzzilli/Corpus/Corpus.swift): stores interesting samples and supplies them to the core fuzzer.
 * [Environment](Sources/Fuzzilli/Core/JavaScriptEnvironment.swift): has knowledge of the runtime environment, e.g. the available builtins, property names, and methods.
 * [Minimizer](Sources/Fuzzilli/Minimization/Minimizer.swift): minimizes crashing and interesting programs.
 * [Evaluator](Sources/Fuzzilli/Evaluation): evaluates whether a sample is interesting according to some metric, e.g. code coverage.
@@ -158,6 +158,8 @@ The following is a list of some of the bugs found with the help of Fuzzilli. Onl
 * [CVE-2019-8820](https://bugs.chromium.org/p/project-zero/issues/detail?id=1924): Type confusion during bailout when reconstructing arguments objects
 * [CVE-2019-8844](https://bugs.webkit.org/show_bug.cgi?id=199361): ObjectAllocationSinkingPhase shouldn't insert hints for allocations which are no longer valid
 * [CVE-2020-3901](https://bugs.webkit.org/show_bug.cgi?id=206805): GetterSetter type confusion in FTL JIT code (due to not always safe LICM)
+* [CVE-2021-30851](https://bugs.webkit.org/show_bug.cgi?id=227988): Missing lock during concurrent HashTable lookup
+* [CVE-2021-30818](https://bugs.webkit.org/show_bug.cgi?id=223278): Type confusion when reconstructing arguments on DFG OSR Exit
 
 #### Gecko/Spidermonkey
 
@@ -168,6 +170,7 @@ The following is a list of some of the bugs found with the help of Fuzzilli. Onl
 * [CVE-2019-9813](https://bugs.chromium.org/p/project-zero/issues/detail?id=1810): IonMonkey compiled code fails to update inferred property types, leading to type confusions
 * [CVE-2019-11707](https://bugs.chromium.org/p/project-zero/issues/detail?id=1820): IonMonkey incorrectly predicts return type of Array.prototype.pop, leading to type confusions
 * [CVE-2020-15656](https://bugzilla.mozilla.org/show_bug.cgi?id=1647293): Type confusion for special arguments in IonMonkey
+* [CVE-2022-42928](https://bugzilla.mozilla.org/show_bug.cgi?id=1791520): Missing KeepAlive annotations for some BigInt operations may lead to memory corruption
 
 #### Chromium/v8
 
@@ -181,6 +184,7 @@ The following is a list of some of the bugs found with the help of Fuzzilli. Onl
 * [Issue 992914](https://bugs.chromium.org/p/project-zero/issues/detail?id=1923): Map migration doesn't respect element kinds, leading to type confusion
 * [CVE-2020-6512](https://bugs.chromium.org/p/chromium/issues/detail?id=1084820): Type Confusion in V8
 * [CVE-2020-16006](https://bugs.chromium.org/p/chromium/issues/detail?id=1133527): Memory corruption due to improperly handled hash collision in DescriptorArray
+* [CVE-2021-37991](https://bugs.chromium.org/p/chromium/issues/detail?id=1250660): Race condition during concurrent JIT compilation
 
 #### [Duktape](https://github.com/svaarala/duktape)
 
