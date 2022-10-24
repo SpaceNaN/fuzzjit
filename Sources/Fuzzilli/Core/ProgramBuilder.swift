@@ -22,14 +22,13 @@ public class ProgramBuilder {
 
     /// The code and type information of the program that is being constructed.
     private var code = Code()
-    public var types = ProgramTypes()
 
     /// Comments for the program that is being constructed.
     private var comments = ProgramComments()
-    
+
     /// The parent program for the program being constructed.
     private let parent: Program?
-    
+
     public enum Mode {
         /// In this mode, the builder will try as hard as possible to generate semantically valid code.
         /// However, the generated code is likely not as diverse as in aggressive mode.
@@ -42,10 +41,7 @@ public class ProgramBuilder {
     /// The mode of this builder
     public var mode: Mode
 
-    /// Whether to perform splicing as part of the code generation.
-    public var performSplicingDuringCodeGeneration = true
-
-    public var context: ProgramContext {
+    public var context: Context {
         return contextAnalyzer.context
     }
 
@@ -55,27 +51,53 @@ public class ProgramBuilder {
     /// Property names and integer values previously seen in the current program.
     private var seenPropertyNames = Set<String>()
     private var seenIntegers = Set<Int64>()
+    private var seenFloats = Set<Double>()
+
+    /// Keep track of existing variables containing known values. For the reuseOrLoadX APIs.
+    /// Important: these will contain variables that are no longer in scope. As such, they generally
+    /// have to be used in combination with the scope analyzer.
+    private var loadedBuiltins = VariableMap<String>()
+    private var loadedIntegers = VariableMap<Int64>()
+    private var loadedFloats = VariableMap<Double>()
 
     /// Various analyzers for the current program.
     private var scopeAnalyzer = ScopeAnalyzer()
     private var contextAnalyzer = ContextAnalyzer()
 
-    /// Abstract interpreter to computer type information.
-    private var interpreter: AbstractInterpreter?
+    /// Type inference for JavaScript variables.
+    private var jsTyper: JSTyper
 
-    /// During code generation, contains the minimum number of remaining instructions
-    /// that should still be generated.
-    private var currentCodegenBudget = 0
+    /// During code building, contains the number of instructions that should still be produced.
+    /// Code building may overshot this number, but will never produce fewer instructions than this.
+    private var currentBuildingBudget = 0
+
+    /// Possible building modes. These are used as argument for build() and determine how the new code is produced.
+    public enum BuildingMode {
+        // Run random code generators.
+        case runningGenerators
+        // Splice code from other random programs in the corpus.
+        case splicing
+        // Do all of the above.
+        case runningGeneratorsAndSplicing
+    }
+
+    /// The current code building mode.
+    private var currentBuildingMode = BuildingMode.runningGeneratorsAndSplicing
+
+    /// How many variables are currently in scope.
+    public var numVisibleVariables: Int {
+        return scopeAnalyzer.visibleVariables.count
+    }
 
     /// Whether there are any variables currently in scope.
     public var hasVisibleVariables: Bool {
-        return scopeAnalyzer.visibleVariables.count > 0
+        return numVisibleVariables > 0
     }
 
     /// Constructs a new program builder for the given fuzzer.
-    init(for fuzzer: Fuzzer, parent: Program?, interpreter: AbstractInterpreter?, mode: Mode) {
+    init(for fuzzer: Fuzzer, parent: Program?, mode: Mode) {
         self.fuzzer = fuzzer
-        self.interpreter = interpreter
+        self.jsTyper = JSTyper(for: fuzzer.environment)
         self.mode = mode
         self.parent = parent
     }
@@ -85,19 +107,22 @@ public class ProgramBuilder {
         numVariables = 0
         seenPropertyNames.removeAll()
         seenIntegers.removeAll()
+        seenFloats.removeAll()
+        loadedBuiltins.removeAll()
+        loadedIntegers.removeAll()
+        loadedFloats.removeAll()
         code.removeAll()
-        types = ProgramTypes()
         scopeAnalyzer = ScopeAnalyzer()
         contextAnalyzer = ContextAnalyzer()
-        interpreter?.reset()
-        currentCodegenBudget = 0
+        jsTyper.reset()
+        currentBuildingBudget = 0
+        currentBuildingMode = .runningGeneratorsAndSplicing
     }
 
     /// Finalizes and returns the constructed program, then resets this builder so it can be reused for building another program.
     public func finalize() -> Program {
         assert(openFunctions.isEmpty)
-        let program = Program(code: code, parent: parent, types: types, comments: comments)
-        // TODO set type status to something meaningful?
+        let program = Program(code: code, parent: parent, comments: comments)
         reset()
         return program
     }
@@ -105,6 +130,11 @@ public class ProgramBuilder {
     /// Prints the current program as FuzzIL code to stdout. Useful for debugging.
     public func dumpCurrentProgram() {
         print(FuzzILLifter().lift(code))
+    }
+
+    /// Returns the index of the next instruction added to the program. This is equal to the current size of the program.
+    public func indexOfNextInstruction() -> Int {
+        return code.count
     }
 
     /// Add a trace comment to the currently generated program at the current position.
@@ -127,15 +157,14 @@ public class ProgramBuilder {
     /// Generates a random integer for the current program context.
     public func genInt() -> Int64 {
         // Either pick a previously seen integer or generate a random one
-        if probability(0.15) && seenIntegers.count >= 2 {
+        if probability(0.2) && seenIntegers.count >= 2 {
             return chooseUniform(from: seenIntegers)
         } else {
-            return chooseUniform(from: self.fuzzer.environment.interestingIntegers)
-//            return withEqualProbability({
-//                chooseUniform(from: self.fuzzer.environment.interestingIntegers)
-//            }, {
-//                Int64.random(in: -0x100000000...0x100000000)
-//            })
+            return withEqualProbability({
+                chooseUniform(from: self.fuzzer.environment.interestingIntegers)
+            }, {
+                Int64.random(in: -0x100000000...0x100000000)
+            })
         }
     }
 
@@ -189,13 +218,16 @@ public class ProgramBuilder {
 
     /// Generates a random integer for the current program context.
     public func genFloat() -> Double {
-        return chooseUniform(from: self.fuzzer.environment.interestingFloats)
         // TODO improve this
-//        return withEqualProbability({
-//            chooseUniform(from: self.fuzzer.environment.interestingFloats)
-//        }, {
-//            Double.random(in: -1000000...1000000)
-//        })
+        if probability(0.2) && seenFloats.count >= 2 {
+            return chooseUniform(from: seenFloats)
+        } else {
+            return withEqualProbability({
+                chooseUniform(from: self.fuzzer.environment.interestingFloats)
+            }, {
+                Double.random(in: -1000000...1000000)
+            })
+        }
     }
 
     /// Generates a random string value for the current program context.
@@ -244,16 +276,32 @@ public class ProgramBuilder {
     ///
 
     /// Returns a random variable.
-    public func randVar() -> Variable {
-//        assert(hasVisibleVariables) // this is must todo thing
-        return randVarInternal() ?? generateVariable(ofType: .number)
+    public func randVar(excludeInnermostScope: Bool = false) -> Variable {
+        assert(hasVisibleVariables)
+        return randVarInternal(excludeInnermostScope: excludeInnermostScope)!
+    }
+
+    /// Returns up to N (different) random variables.
+    /// This method will only return fewer than N variables if the number of currently visible variables is less than N.
+    public func randVars(upTo n: Int) -> [Variable] {
+        assert(hasVisibleVariables)
+        var variables = [Variable]()
+        while variables.count < n {
+            guard let newVar = randVarInternal(filter: { !variables.contains($0) }) else {
+                break
+            }
+            variables.append(newVar)
+        }
+        return variables
     }
 
     /// Returns a random variable of the given type.
     ///
     /// In conservative mode, this function fails unless it finds a matching variable.
     /// In aggressive mode, this function will also return variables that have unknown type, and may, if no matching variables are available, return variables of any type.
-    public func randVar(ofType type: Type) -> Variable? {
+    ///
+    /// In certain cases, for example in the InputMutator, it might be required to exclude variables from the innermost scopes, which can be achieved by passing excludeInnermostScope: true.
+    public func randVar(ofType type: JSType, excludeInnermostScope: Bool = false) -> Variable? {
         var wantedType = type
 
         // As query/input type, .unknown is treated as .anything.
@@ -267,7 +315,7 @@ public class ProgramBuilder {
             wantedType |= .unknown
         }
 
-        if let v = randVarInternal({ self.type(of: $0).Is(wantedType) }) {
+        if let v = randVarInternal(filter: { self.type(of: $0).Is(wantedType) }, excludeInnermostScope: excludeInnermostScope) {
             return v
         }
 
@@ -281,7 +329,7 @@ public class ProgramBuilder {
     }
 
     /// Returns a random variable of the given type. This is the same as calling randVar in conservative building mode.
-    public func randVar(ofConservativeType type: Type) -> Variable? {
+    public func randVar(ofConservativeType type: JSType) -> Variable? {
         let oldMode = mode
         mode = .conservative
         defer { mode = oldMode }
@@ -289,22 +337,24 @@ public class ProgramBuilder {
     }
 
     /// Returns a random variable satisfying the given constraints or nil if none is found.
-    private func randVarInternal(_ selector: ((Variable) -> Bool)? = nil) -> Variable? {
+    func randVarInternal(filter: ((Variable) -> Bool)? = nil, excludeInnermostScope: Bool = false) -> Variable? {
         var candidates = [Variable]()
+        let scopes = excludeInnermostScope ? scopeAnalyzer.scopes.dropLast() : scopeAnalyzer.scopes
 
         // Prefer inner scopes
         withProbability(0.75) {
-            candidates = chooseBiased(from: scopeAnalyzer.scopes, factor: 1.25)
-            if let sel = selector {
-                candidates = candidates.filter(sel)
+            candidates = chooseBiased(from: scopes, factor: 1.25)
+            if let f = filter {
+                candidates = candidates.filter(f)
             }
         }
 
         if candidates.isEmpty {
-            if let sel = selector {
-                candidates = scopeAnalyzer.visibleVariables.filter(sel)
+            let visibleVariables = excludeInnermostScope ? scopes.reduce([], +) : scopeAnalyzer.visibleVariables
+            if let f = filter {
+                candidates = visibleVariables.filter(f)
             } else {
-                candidates = scopeAnalyzer.visibleVariables
+                candidates = visibleVariables
             }
         }
 
@@ -317,74 +367,72 @@ public class ProgramBuilder {
 
 
     /// Type information access.
-    public func type(of v: Variable) -> Type {
-        return types.getType(of: v, after: code.lastInstruction.index)
+    public func type(of v: Variable) -> JSType {
+        return jsTyper.type(of: v)
     }
 
-    public func type(ofProperty property: String) -> Type {
-        return interpreter?.type(ofProperty: property) ?? .unknown
+    public func type(ofProperty property: String) -> JSType {
+        return jsTyper.type(ofProperty: property)
     }
 
     /// Returns the type of the `super` binding at the current position.
-    public func currentSuperType() -> Type {
-        return interpreter?.currentSuperType() ?? .unknown
+    public func currentSuperType() -> JSType {
+        return jsTyper.currentSuperType()
     }
 
-    public func methodSignature(of methodName: String, on object: Variable) -> FunctionSignature {
-        return interpreter?.inferMethodSignature(of: methodName, on: object) ?? FunctionSignature.forUnknownFunction
+    public func methodSignature(of methodName: String, on object: Variable) -> Signature {
+        return jsTyper.inferMethodSignature(of: methodName, on: object)
     }
 
-    public func methodSignature(of methodName: String, on objType: Type) -> FunctionSignature {
-        return interpreter?.inferMethodSignature(of: methodName, on: objType) ?? FunctionSignature.forUnknownFunction
+    public func methodSignature(of methodName: String, on objType: JSType) -> Signature {
+        return jsTyper.inferMethodSignature(of: methodName, on: objType)
     }
 
-    public func setType(ofProperty propertyName: String, to propertyType: Type) {
+    public func setType(ofProperty propertyName: String, to propertyType: JSType) {
         trace("Setting global property type: \(propertyName) => \(propertyType)")
-        interpreter?.setType(ofProperty: propertyName, to: propertyType)
+        jsTyper.setType(ofProperty: propertyName, to: propertyType)
     }
 
-    public func setType(ofVariable variable: Variable, to variableType: Type) {
-        interpreter?.setType(of: variable, to: variableType)
+    public func setType(ofVariable variable: Variable, to variableType: JSType) {
+        jsTyper.setType(of: variable, to: variableType)
     }
 
-    public func setSignature(ofMethod methodName: String, to methodSignature: FunctionSignature) {
+    public func setSignature(ofMethod methodName: String, to methodSignature: Signature) {
         trace("Setting global method signature: \(methodName) => \(methodSignature)")
-        interpreter?.setSignature(ofMethod: methodName, to: methodSignature)
+        jsTyper.setSignature(ofMethod: methodName, to: methodSignature)
+    }
+
+    // Generate random parameters for a function, method, or constructor.
+    public func generateFunctionParameters() -> FunctionDescriptor {
+        return .parameters(n: Int.random(in: 2...4), hasRestParameter: probability(0.1))
     }
 
     // This expands and collects types for arguments in function signatures.
-    private func prepareArgumentTypes(forSignature signature: FunctionSignature) -> [Type] {
-        var parameterTypes = signature.inputTypes
-        var argumentTypes = [Type]()
+    private func prepareArgumentTypes(forSignature signature: Signature) -> [JSType] {
+        var argumentTypes = [JSType]()
 
-        // "Expand" varargs parameters first
-        if signature.hasVarargsParameter() {
-            let varargsParam = parameterTypes.removeLast()
-            assert(varargsParam.isList)
-            for _ in 0..<Int.random(in: 0...5) {
-                parameterTypes.append(varargsParam.removingFlagTypes())
-            }
-        }
-
-        for var param in parameterTypes {
-            if param.isOptional {
+        for param in signature.parameters {
+            switch param {
+            case .rest(let t):
+                // "Unroll" the rest parameter
+                for _ in 0..<Int.random(in: 0...5) {
+                    argumentTypes.append(t)
+                }
+            case .opt(let t):
                 // It's an optional argument, so stop here in some cases
                 if probability(0.25) {
-                    break
+                    return argumentTypes
                 }
-
-                // Otherwise, "unwrap" the optional
-                param = param.removingFlagTypes()
+                fallthrough
+            case .plain(let t):
+                argumentTypes.append(t)
             }
-
-            assert(!param.hasFlags)
-            argumentTypes.append(param)
         }
 
         return argumentTypes
     }
 
-    public func generateCallArguments(for signature: FunctionSignature) -> [Variable] {
+    public func generateCallArguments(for signature: Signature) -> [Variable] {
         let argumentTypes = prepareArgumentTypes(forSignature: signature)
         var arguments = [Variable]()
 
@@ -403,7 +451,7 @@ public class ProgramBuilder {
         return arguments
     }
 
-    public func randCallArguments(for signature: FunctionSignature) -> [Variable]? {
+    public func randCallArguments(for signature: Signature) -> [Variable]? {
         let argumentTypes = prepareArgumentTypes(forSignature: signature)
         var arguments = [Variable]()
         for argumentType in argumentTypes {
@@ -414,12 +462,12 @@ public class ProgramBuilder {
     }
 
     public func randCallArguments(for function: Variable) -> [Variable]? {
-        let signature = type(of: function).signature ?? FunctionSignature.forUnknownFunction
+        let signature = type(of: function).signature ?? Signature.forUnknownFunction
         return randCallArguments(for: signature)
     }
 
     public func generateCallArguments(for function: Variable) -> [Variable] {
-        let signature = type(of: function).signature ?? FunctionSignature.forUnknownFunction
+        let signature = type(of: function).signature ?? Signature.forUnknownFunction
         return generateCallArguments(for: signature)
     }
 
@@ -428,9 +476,26 @@ public class ProgramBuilder {
         return randCallArguments(for: signature)
     }
 
-    public func randCallArguments(forMethod methodName: String, on objType: Type) -> [Variable]? {
+    public func randCallArguments(forMethod methodName: String, on objType: JSType) -> [Variable]? {
         let signature = methodSignature(of: methodName, on: objType)
         return randCallArguments(for: signature)
+    }
+
+    public func randCallArgumentsWithSpreading(n: Int) -> (arguments: [Variable], spreads: [Bool]) {
+        var arguments: [Variable] = []
+        var spreads: [Bool] = []
+        for _ in 0...n {
+            let val = randVar()
+            arguments.append(val)
+            // Prefer to spread values that we know are iterable, as non-iterable values will lead to exceptions ("TypeError: Found non-callable @@iterator")
+            if type(of: val).Is(.iterable) {
+                spreads.append(probability(0.9))
+            } else {
+                spreads.append(probability(0.1))
+            }
+        }
+
+        return (arguments, spreads)
     }
 
     public func generateCallArguments(forMethod methodName: String, on object: Variable) -> [Variable] {
@@ -447,7 +512,7 @@ public class ProgramBuilder {
     ///    and methods that are selected from the environment.
     /// It currently cannot generate:
     ///  - methods for objects
-    func generateVariable(ofType type: Type) -> Variable {
+    func generateVariable(ofType type: JSType) -> Variable {
         trace("Generating variable of type \(type)")
 
         // Check primitive types
@@ -465,6 +530,16 @@ public class ProgramBuilder {
         }
         if type.Is(.bigint) || type.Is(fuzzer.environment.bigIntType) {
             return loadBigInt(genInt())
+        }
+        if type.Is(.function()) {
+            let signature = type.signature ?? Signature(withParameterCount: Int.random(in: 2...5), hasRestParam: probability(0.1))
+            return buildPlainFunction(with: .signature(signature), isStrict: probability(0.1)) { _ in
+                buildRecursive()
+                doReturn(randVar())
+            }
+        }
+        if type.Is(.regexp) || type.Is(fuzzer.environment.regExpType) {
+            return loadRegExp(genRegExp(), genRegExpFlags())
         }
 
         assert(type.Is(.object()), "Unexpected type encountered \(type)")
@@ -486,7 +561,7 @@ public class ProgramBuilder {
             assert(constructorType.Is(.function() | .constructor()), "We don't know how to construct \(group)")
             assert(constructorType.signature != nil, "We don't know how to construct \(group) (missing signature for constructor)")
             assert(constructorType.signature!.outputType.group == group, "We don't know how to construct \(group) (invalid signature for constructor)")
-            
+
             let constructorSignature = constructorType.signature!
             let arguments = generateCallArguments(for: constructorSignature)
             let constructor = loadBuiltin(group)
@@ -504,10 +579,12 @@ public class ProgramBuilder {
                     var value: Variable?
                     let type = self.type(ofProperty: prop)
                     if type != .unknown {
-                        value = randVar(ofConservativeType: type)
-                        if value == nil {
-                            value = generateVariable(ofType: type)
-                        }
+                        // TODO Here and elsewhere in this function: turn this pattern into a new helper function,
+                        // e.g. reuseOrGenerateVariable(ofType: ...). See also the discussions in
+                        // https://github.com/googleprojectzero/fuzzilli/blob/main/Docs/HowFuzzilliWorks.md#when-to-instantiate
+                        // TODO I don't think we need to use the ofConservativeType version. The regular ofType version should
+                        // be fine since the ProgramTemplates/HybridEngine do the code generation in conservative mode anyway.
+                        value = randVar(ofConservativeType: type) ?? generateVariable(ofType: type)
                     } else {
                         if !hasVisibleVariables {
                             value = loadInt(genInt())
@@ -527,12 +604,13 @@ public class ProgramBuilder {
                     let methodVar = randVar(ofType: .function()) ?? generateVariable(ofType: .function())
                     storeProperty(methodVar, as: method, on: obj)
                 }
-                // These types might have been defined in the interpreter
                 for prop in type.properties {
                     var value: Variable?
                     let type = self.type(ofProperty: prop)
                     if type != .unknown {
                         value = randVar(ofConservativeType: type) ?? generateVariable(ofType: type)
+                    } else {
+                        value = randVar()
                     }
                     storeProperty(value!, as: prop, on: obj)
                 }
@@ -549,22 +627,17 @@ public class ProgramBuilder {
     ///
     private var varMaps = [VariableMap<Variable>]()
 
-    /// Formatted ProgramTypes structure for easier adopting of runtimeTypes
-    private var runtimeTypesMaps = [[[(Variable, Type)]]]()
-
     /// Prepare for adoption of variables from the given program.
     ///
     /// This sets up a mapping for variables from the given program to the
     /// currently constructed one to avoid collision of variable names.
     public func beginAdoption(from program: Program) {
         varMaps.append(VariableMap())
-        runtimeTypesMaps.append(program.types.onlyRuntimeTypes().indexedByInstruction(for: program))
     }
 
     /// Finishes the most recently started adoption.
     public func endAdoption() {
         varMaps.removeLast()
-        runtimeTypesMaps.removeLast()
     }
 
     /// Executes the given block after preparing for adoption from the provided program.
@@ -583,37 +656,14 @@ public class ProgramBuilder {
         return varMaps.last![variable]!
     }
 
-    private func createVariableMapping(from sourceVariable: Variable, to hostVariable: Variable) {
-        assert(!varMaps.last!.contains(sourceVariable))
-        varMaps[varMaps.count - 1][sourceVariable] = hostVariable
-    }
-
     /// Maps a list of variables from the program that is currently configured for adoption into the program being constructed.
     public func adopt<Variables: Collection>(_ variables: Variables) -> [Variable] where Variables.Element == Variable {
         return variables.map(adopt)
     }
 
-    private func adoptTypes(at origInstrIndex: Int) {
-        for (variable, type) in runtimeTypesMaps.last![origInstrIndex] {
-            // No need to keep unknown type nor type of not adopted variable
-            if let adoptedVariable = varMaps.last![variable] {
-                // Unknown runtime types should not be saved in ProgramTypes
-                assert(type != .unknown)
-
-                interpreter?.setType(of: adoptedVariable, to: type)
-                // We should save this type even if we do not have interpreter
-                // This way we can use runtime types without interpreter
-                types.setType(of: adoptedVariable, to: type, after: code.lastInstruction.index, quality: .runtime)
-            }
-        }
-    }
-
     /// Adopts an instruction from the program that is currently configured for adoption into the program being constructed.
-    public func adopt(_ instr: Instruction, keepTypes: Bool) {
+    public func adopt(_ instr: Instruction) {
         internalAppend(Instruction(instr.op, inouts: adopt(instr.inouts)))
-        if keepTypes {
-            adoptTypes(at: instr.index)
-        }
     }
 
     /// Append an instruction at the current position.
@@ -631,127 +681,288 @@ public class ProgramBuilder {
     public func append(_ program: Program) {
         adopting(from: program) {
             for instr in program.code {
-                adopt(instr, keepTypes: true)
+                adopt(instr)
             }
         }
     }
 
-    /// Append a splice from another program.
-    public func splice(from program: Program, at index: Int) {
-        trace("Splicing instruction \(index) (\(program.code[index].op.name)) from \(program.id)")
-        
-        var idx = index
+    // Probabilities of remapping variables to host variables during splicing. These are writable so they can be reconfigured for testing.
+    // We use different probabilities for outer and for inner outputs: while we rarely want to replace outer outputs, we frequently want to replace inner outputs
+    // (e.g. function parameters) to avoid splicing function definitions that may then not be used at all. Instead, we prefer to splice only the body of such functions.
+    var probabilityOfRemappingAnInstructionsOutputsDuringSplicing = 0.05
+    var probabilityOfRemappingAnInstructionsInnerOutputsDuringSplicing = 0.75
+    // The probability of including an instruction that may mutate a variable required by the slice (but does not itself produce a required variable).
+    var probabilityOfIncludingAnInstructionThatMayMutateARequiredVariable = 0.5
 
-        // The input re-wiring algorithm modifies the code of the source program
-        // to implement the manual variable mapping
-        var source = program.code
 
-        // The placeholder variable is the next free variable in the victim program.
-        var nextFreeVariable = source.nextFreeVariable().number
-        func makePlaceholderVariable() -> Variable {
-            nextFreeVariable += 1
-            return Variable(number: nextFreeVariable - 1)
+    /// Splice code from the given program into the current program.
+    ///
+    /// Splicing computes a set of dependend (through dataflow) instructions in one program (called a "slice") and inserts it at the current position in this program.
+    ///
+    /// If the optional index is specified, the slice starting at that instruction is used. Otherwise, a random slice is computed.
+    /// If mergeDataFlow is true, the dataflows of the two programs are potentially integrated by replacing some variables in the slice with "compatible" variables in the host program.
+    /// Returns true on success (if at least one instruction has been spliced), false otherwise.
+    @discardableResult
+    public func splice(from program: Program, at specifiedIndex: Int? = nil, mergeDataFlow: Bool = true) -> Bool {
+        // Splicing:
+        //
+        // Invariants:
+        //  - A block is included in a slice in full (including its entire body) or not at all
+        //  - An instruction can only be included if its required context is a subset of the current context
+        //    OR if one or more of its surrounding blocks are included and all missing contexts are opened by them
+        //  - An instruction can only be included if all its data-flow dependencies are included
+        //    OR if the required variables have been remapped to existing variables in the host program
+        //
+        // Algorithm:
+        //  1. Iterate over the program from start to end and compute for every block:
+        //       - the inputs required by this block. This is the set of variables that are used as input
+        //         for one or more instructions in the block's body, but are not created by instructions in the block
+        //       - the context required by this block. This is the union of all contexts required by instructions
+        //         in the block's body and subracting the context opened by the block itself
+        //     In essence, this step allows treating every block start as a single instruction, which simplifies step 2.
+        //  2. Iterate over the program from start to end and check which instructions can be inserted at the current
+        //     position given the current context and the instruction's required context as well as the set of available
+        //     variables and the variables required as inputs for the instruction. When deciding whether a block can be
+        //     included, this will use the information computed in step 1 to treat the block as a single instruction
+        //     (which it effectively is, as it will always be included in full). If an instruction can be included, its
+        //     outputs are available for other instructions to use. If an instruction cannot be included, try to remap its
+        //     outputs to existing and "compatible" variables in the host program so other instructions that depend on these
+        //     variables can still be included. Also randomly remap some other variables to connect the dataflows of the two
+        //     programs if that is enabled.
+        //  3. Pick a random instruction from all instructions computed in step (2) or use the provided start index.
+        //  4. Iterate over the program in reverse order and compute the slice: every instruction that creates an
+        //     output needed as input for another instruction in the slice must be included as well. Step 2 guarantees that
+        //     any such instruction can be part of the slice. Optionally, this step can also include instructions that may
+        //     mutate variables required by the slice, for example property stores or method calls.
+        //  5. Iterate over the program from start to end and add every instruction that is part of the slice into
+        //     the current program, while also taking care of remapping the inouts, either to existing variables
+        //     (if the variables were remapped in step (2)), or newly allocated variables.
+
+        // Helper class to store various bits of information associated with a block.
+        // This is a class so that each instruction belonging to the same block can have a reference to the same object.
+        class Block {
+            let startIndex: Int
+            var endIndex = 0
+
+            let openedContext: Context
+            var requiredContext: Context
+
+            var providedInputs = VariableSet()
+            var requiredInputs = VariableSet()
+
+            init(startedBy head: Instruction) {
+                self.startIndex = head.index
+                self.openedContext = head.op.contextOpened
+                self.requiredContext = head.op.requiredContext
+                self.requiredInputs.formUnion(head.inputs)
+                self.providedInputs.formUnion(head.allOutputs)
+            }
         }
 
-        // We still adopt from the input program, just with slightly modified code :)
-        beginAdoption(from: program)
+        //
+        // Step (1): compute the context and data-flow dependencies of every block.
+        //
+        var blocks = [Int: Block]()
 
-        // Determine all necessary input instructions for the choosen instruction
-        // We need special handling for blocks:
-        //   If the choosen instruction is a block instruction then copy the whole block
-        //   If we need an inner output of a block instruction then only copy the block instructions, not the content
-        //   Otherwise copy the whole block including its content
-        var requiredInstructions = Set<Int>()
-        var requiredInputs = VariableSet()
-
-        // This maps victim instruction indices to victim : host variable remap
-        // Instead of calling adopt and then using nextvar if the variable is
-        // not in the varMaps map, we do the adoption manually.
-        func rewireOrKeepInputs(of instr: Instruction) {
-            var inputs = Array(instr.inputs)
-            var neededInputs: [Variable] = []
-            for (idx, input) in instr.inputs.enumerated() {
-                neededInputs.append(input)
-                if probability(0.2) && mode != .conservative {
-                    var type = program.type(of: input, before: instr.index)
-                    if type == .unknown {
-                        type = .anything
-                    }
-                    if let hostVar = randVar(ofConservativeType: type.generalize()) {
-                        let placeholderVariable = makePlaceholderVariable()
-                        inputs[idx] = placeholderVariable
-                        createVariableMapping(from: placeholderVariable, to: hostVar)
-                        neededInputs.removeLast()
-                    }
-                }
-            }
-            // Rewrite the instruction with the new inputs only if we have modified it.
-            if inputs[...] != instr.inputs {
-                source.replace(instr, with: Instruction(instr.op, inouts: inputs + Array(instr.allOutputs)))
-            }
-            requiredInputs.formUnion(neededInputs)
-            requiredInstructions.insert(instr.index)
+        // Helper functions for step (1).
+        var activeBlocks = [Block]()
+        func updateBlockDependencies(_ requiredContext: Context, _ requiredInputs: VariableSet) {
+            guard let current = activeBlocks.last else { return }
+            current.requiredContext.formUnion(requiredContext.subtracting(current.openedContext))
+            current.requiredInputs.formUnion(requiredInputs.subtracting(current.providedInputs))
+        }
+        func updateBlockProvidedVariables(_ vars: ArraySlice<Variable>) {
+            guard let current = activeBlocks.last else { return }
+            current.providedInputs.formUnion(vars)
         }
 
-        func keep(_ instr: Instruction, includeBlockContent: Bool = false) {
-            guard !requiredInstructions.contains(instr.index) else { return }
-            if instr.isBlock {
-                let group = BlockGroup(around: instr, in: source)
-                let instructions = includeBlockContent ? group.includingContent() : group.excludingContent()
-                for instr in instructions {
-                    rewireOrKeepInputs(of: instr)
+        for instr in program.code {
+            updateBlockDependencies(instr.op.requiredContext, VariableSet(instr.inputs))
+            updateBlockProvidedVariables(instr.outputs)
+
+            if instr.isBlockGroupStart {
+                let block = Block(startedBy: instr)
+                blocks[instr.index] = block
+                activeBlocks.append(block)
+            } else if instr.isBlockGroupEnd {
+                assert(!instr.hasOutputs)
+                let current = activeBlocks.removeLast()
+                current.endIndex = instr.index
+                blocks[instr.index] = current
+                // Merge requirements into parent block (if any)
+                updateBlockDependencies(current.requiredContext, current.requiredInputs)
+            } else if instr.isBlock {
+                assert(instr.numOutputs == 0)           // TODO still needed?
+                blocks[instr.index] = activeBlocks.last!
+            }
+
+            updateBlockProvidedVariables(instr.innerOutputs)
+        }
+
+        //
+        // Step (2): determine which instructions can be part of the slice and attempt to find replacement variables for the outputs of instructions that cannot be included.
+        //
+        // We need a typer to be able to find compatible replacement variables if we are merging the dataflows of the two programs.
+        var typer = JSTyper(for: fuzzer.environment)
+        // The set of variables that are available for a slice. A variable is available either because the instruction that outputs
+        // it can be part of the slice or because the variable has been remapped to a host variable.
+        var availableVariables = VariableSet()
+        // Variables in the program that have been remapped to host variables.
+        var remappedVariables = VariableMap<Variable>()
+        // All instructions that can be included in the slice.
+        var candidates = Set<Int>()
+
+        // Helper functions for step (2).
+        func tryRemapVariables(_ variables: ArraySlice<Variable>) {
+            guard mergeDataFlow else { return }
+
+            for v in variables {
+                let type = typer.type(of: v)
+                // Find a compatible (i.e. one of the same type) variable in the host program.
+                // If that doesn't work, either because we don't know the type or because there is no matching variable, then take a random variable unless we're in conservative building mode.
+                var maybeReplacement: Variable? = nil
+                if type != .unknown, let compatibleVariable = randVar(ofConservativeType: type.generalize()) {
+                    maybeReplacement = compatibleVariable
+                } else if mode != .conservative && hasVisibleVariables {
+                    maybeReplacement = randVar()
                 }
+                if let replacement = maybeReplacement {
+                    remappedVariables[v] = replacement
+                    availableVariables.insert(v)
+                }
+            }
+        }
+        func maybeRemapVariables(_ variables: ArraySlice<Variable>, withProbability remapProbability: Double) {
+            assert(remapProbability >= 0.0 && remapProbability <= 1.0)
+            if probability(remapProbability) {
+                tryRemapVariables(variables)
+            }
+        }
+        func getRequirements(of instr: Instruction) -> (requiredContext: Context, requiredInputs: VariableSet) {
+            if let state = blocks[instr.index] {
+                assert(instr.isBlock)
+                return (state.requiredContext, state.requiredInputs)
             } else {
-                rewireOrKeepInputs(of: instr)
+                return (instr.op.requiredContext, VariableSet(instr.inputs))
+            }
+        }
+        func canSpliceOperation(of instr: Instruction) -> Bool {
+            // Switch default cases cannot be spliced as there must only be one of them in a switch, and there is no
+            // way to determine if the switch being spliced into has a default case or not.
+            // TODO: consider adding an Operation.Attribute for instructions that must only occur once if there are more such cases in the future.
+            var instr = instr
+            if let block = blocks[instr.index] {
+                instr = program.code[block.startIndex]
+            }
+            if instr.op is BeginSwitchDefaultCase {
+                return false
+            }
+            return true
+        }
+
+        for instr in program.code {
+            // Compute variable types to be able to find compatible replacement variables in the host program if necessary.
+            typer.analyze(instr)
+
+            // Maybe remap the outputs of this instruction to existing and "compatible" (because of their type) variables in the host program.
+            maybeRemapVariables(instr.outputs, withProbability: probabilityOfRemappingAnInstructionsOutputsDuringSplicing)
+            maybeRemapVariables(instr.innerOutputs, withProbability: probabilityOfRemappingAnInstructionsInnerOutputsDuringSplicing)
+
+            // For the purpose of this step, blocks are treated as a single instruction with all the context and input requirements of the
+            // instructions in their body. This is done through the getRequirements function which uses the data computed in step (1).
+            let (requiredContext, requiredInputs) = getRequirements(of: instr)
+
+            if requiredContext.isSubset(of: context) && requiredInputs.isSubset(of: availableVariables) && canSpliceOperation(of: instr) {
+                candidates.insert(instr.index)
+                // This instruction is available, and so are its outputs...
+                availableVariables.formUnion(instr.allOutputs)
+            } else {
+                // While we cannot include this instruction, we may still be able to replace its outputs with existing variables in the host program
+                // which will allow other instructions that depend on these outputs to be included.
+                tryRemapVariables(instr.allOutputs)
             }
         }
 
-        // Keep the selected instruction
-        keep(program.code[idx], includeBlockContent: true)
+        //
+        // Step (3): select the "root" instruction of the slice or use the provided one if any.
+        //
+        guard !candidates.isEmpty else { return false }
+        let rootIndex = specifiedIndex ?? chooseUniform(from: candidates)
+        guard candidates.contains(rootIndex) else { return false }
+        trace("Splicing instruction \(rootIndex) (\(program.code[rootIndex].op.name)) from \(program.id)")
 
-        while idx > 0 {
-            idx -= 1
-            let current = source[idx]
+        //
+        // Step (4): compute the slice.
+        //
+        var slice = Set<Int>()
+        var requiredVariables = VariableSet()
+        var shouldIncludeCurrentBlock = false
+        var startOfCurrentBlock = -1
+        var index = rootIndex
+        while index >= 0 {
+            let instr = program.code[index]
 
-            if !requiredInputs.isDisjoint(with: current.allOutputs) {
-                let onlyNeedsInnerOutputs = requiredInputs.isDisjoint(with: current.outputs)
-                // If we only need inner outputs (e.g. function parameters), then we don't include
-                // the block's content in the slice. Otherwise we do.
-                keep(current, includeBlockContent: !onlyNeedsInnerOutputs)
-            }
-
-            // If we perform a potentially mutating operation (such as a property store or a method call)
-            // on a required variable, then we may decide to keep that instruction as well.
-            if mode == .conservative || (mode == .aggressive && probability(0.5)) {
-                if current.mayMutate(requiredInputs) {
-                    keep(current, includeBlockContent: false)
+            var includeCurrentInstruction = false
+            if index == rootIndex {
+                // This is the root of the slice, so include it.
+                includeCurrentInstruction = true
+                assert(candidates.contains(index))
+            } else if shouldIncludeCurrentBlock {
+                // This instruction is part of the slice because one of its surrounding blocks is included.
+                includeCurrentInstruction = true
+                // In this case, the instruction isn't necessarily a candidate (but at least one of its surrounding blocks is).
+            } else if !requiredVariables.isDisjoint(with: instr.allOutputs) {
+                // This instruction is part of the slice because at least one of its outputs is required.
+                includeCurrentInstruction = true
+                assert(candidates.contains(index))
+            } else {
+                // Also (potentially) include instructions that can modify one of the required variables if they can be included in the slice.
+                if probability(probabilityOfIncludingAnInstructionThatMayMutateARequiredVariable) {
+                    if candidates.contains(index) && instr.mayMutate(anyOf: requiredVariables) {
+                        includeCurrentInstruction = true
+                    }
                 }
             }
-        }
 
-        for instr in source {
-            if requiredInstructions.contains(instr.index) {
-                adopt(instr, keepTypes: true)
+            if includeCurrentInstruction {
+                slice.insert(instr.index)
+
+                // Only those inputs that we haven't picked replacements for are now also required.
+                let newlyRequiredVariables = instr.inputs.filter({ !remappedVariables.contains($0) })
+                requiredVariables.formUnion(newlyRequiredVariables)
+
+                if !shouldIncludeCurrentBlock && instr.isBlock {
+                    // We're including a block instruction due to its outputs. We now need to ensure that we include the full block with it.
+                    shouldIncludeCurrentBlock = true
+                    let block = blocks[index]!
+                    startOfCurrentBlock = block.startIndex
+                    index = block.endIndex + 1
+                }
             }
+
+            if index == startOfCurrentBlock {
+                assert(instr.isBlockGroupStart)
+                shouldIncludeCurrentBlock = false
+                startOfCurrentBlock = -1
+            }
+
+            index -= 1
         }
 
-        endAdoption()
-        trace("End of splice")
-    }
+        //
+        // Step (5): insert the final slice into the current program while also remapping any missing variables to their replacements selected in step (2).
+        //
+        var variableMap = remappedVariables
+        for instr in program.code where slice.contains(instr.index) {
+            for output in instr.allOutputs {
+                variableMap[output] = nextVariable()
+            }
+            let inouts = instr.inouts.map({ variableMap[$0]! })
+            append(Instruction(instr.op, inouts: inouts))
+        }
 
-    func splice(from program: Program) {
-        // Pick a starting instruction from the selected program.
-        // For that, prefer dataflow "sinks" whose outputs are not used for anything else,
-        // as these are probably the most interesting instructions.
-        var idx = 0
-        var counter = 0
-        repeat {
-            counter += 1
-            idx = Int.random(in: 0..<program.size)
-            // Some instructions are less suited to be the start of a splice. Skip them.
-        } while counter < 25 && (program.code[idx].isJump || program.code[idx].isBlockEnd || program.code[idx].isPrimitive || program.code[idx].isLiteral)
-
-        splice(from: program, at: idx)
+        trace("Splicing done")
+        return true
     }
 
     private var openFunctions = [Variable]()
@@ -759,19 +970,93 @@ public class ProgramBuilder {
         return openFunctions.contains(function)
     }
 
-    /// Executes a code generator.
-    ///
-    /// - Parameter generators: The code generator to run at the current position.
-    /// - Returns: the number of instructions added by all generators.
-    public func run(_ generator: CodeGenerator, recursiveCodegenBudget: Int? = nil) {
-        assert(generator.requiredContext.isSubset(of: context))
+    /// Build random code at the current position in the program.
+    public func build(n: Int = 1, by mode: BuildingMode = .runningGeneratorsAndSplicing) {
+        currentBuildingBudget = n
+        currentBuildingMode = mode
+        buildInternal()
+    }
 
-        if let budget = recursiveCodegenBudget {
-            currentCodegenBudget = budget
+    /// Recursive code building. Used by CodeGenerators for example to fill the bodies of generated blocks.
+    public func buildRecursive() {
+        assert(currentBuildingMode != .splicing)
+
+        // Generate at least one instruction, even if already below budget.
+        if currentBuildingBudget <= 0 {
+            currentBuildingBudget = 1
         }
+
+        // Limit recursive building (i.e. bodies of generated blocks) to 25% - 50% of the original budget.
+        let remainingOuterBuildingBudget = Int(Double(currentBuildingBudget) * Double.random(in: 0.50...0.75))
+        currentBuildingBudget -= remainingOuterBuildingBudget
+
+        buildInternal()
+
+        // Restore the original budget.
+        currentBuildingBudget = remainingOuterBuildingBudget
+    }
+
+    private func buildInternal() {
+        assert(currentBuildingBudget > 0)
+
+        // Splicing or code generation may fail. This counts consecutive failures to avoid infinite looping below.
+        var consecutiveFailures = 0
+
+        // Unless we are only splicing, find all generators that have the required context. We must always have at least one suitable code generator.
+        let origContext = context
+        var availableGenerators = WeightedList<CodeGenerator>()
+        if currentBuildingMode != .splicing {
+            availableGenerators = fuzzer.codeGenerators.filter({ $0.requiredContext.isSubset(of: origContext) })
+            assert(!availableGenerators.isEmpty)
+        }
+
+        while currentBuildingBudget > 0 && consecutiveFailures < 10 {
+            assert(context == origContext, "Code generation or splicing must not change the current context")
+
+            var mode = currentBuildingMode
+            if mode == .runningGeneratorsAndSplicing {
+                mode = chooseUniform(from: [.runningGenerators, .splicing])
+            }
+
+            let previousBudget = currentBuildingBudget
+
+            switch mode {
+            case .runningGenerators:
+                if !hasVisibleVariables {
+                    // Can't run code generators if there are no visible variables, so generate some.
+                    run(chooseUniform(from: fuzzer.trivialCodeGenerators))
+                    assert(hasVisibleVariables)
+                }
+
+                // Select a random generator and run it.
+                let generator = availableGenerators.randomElement()
+                run(generator)
+
+            case .splicing:
+                let program = fuzzer.corpus.randomElementForSplicing()
+                splice(from: program)
+
+            default:
+                fatalError("Unknown ProgramBuildingMode \(mode)")
+            }
+
+            // Both splicing and code generation can sometimes fail, for example if no other program with the necessary features exists.
+            // To avoid infinite loops, we bail out after a certain number of failures.
+            if currentBuildingBudget == previousBudget {
+                consecutiveFailures += 1
+            } else {
+                consecutiveFailures = 0
+            }
+        }
+    }
+
+    /// Runs a code generator in the current context.
+    private func run(_ generator: CodeGenerator) {
+        assert(generator.requiredContext.isSubset(of: context))
 
         var inputs: [Variable] = []
         for type in generator.inputTypes {
+            // TODO should this generate variables in conervative mode
             guard let val = randVar(ofType: type) else { return }
             // In conservative mode, attempt to prevent direct recursion to reduce the number of timeouts
             // This is a very crude mechanism. It might be worth implementing a more sophisticated one.
@@ -780,60 +1065,57 @@ public class ProgramBuilder {
             inputs.append(val)
         }
 
-        self.trace("Executing code generator \(generator.name)")
+        trace("Executing code generator \(generator.name)")
         generator.run(in: self, with: inputs)
-        self.trace("Code generator finished")
+        trace("Code generator finished")
     }
 
-    private func generateInternal() {
-        assert(!fuzzer.corpus.isEmpty)
-
-        while currentCodegenBudget > 0 {
-
-            // There are two modes of code generation:
-            // 1. Splice code from another program in the corpus
-            // 2. Pick a CodeGenerator, find or generate matching variables, and execute it
-
-            assert(performSplicingDuringCodeGeneration || hasVisibleVariables)
-            withEqualProbability({
-                guard self.performSplicingDuringCodeGeneration else { return }
-                let program = self.fuzzer.corpus.randomElementForSplicing()
-                self.splice(from: program)
-            }, {
-                // We can't run code generators if we don't have any visible variables.
-                guard self.scopeAnalyzer.visibleVariables.count > 0 else { return }
-                let generator = self.fuzzer.codeGenerators.randomElement()
-                if generator.requiredContext.isSubset(of: self.context) {
-                    self.run(generator)
-                }
-            })
-
-            // This effectively limits the size of recursively generated code fragments.
-            if probability(0.25) {
-                return
+    //
+    // Variable reuse APIs.
+    //
+    // These attempt to find an existing variable containing the desired value.
+    // If none exist, a new instruction is emitted to create it.
+    //
+    // This is generally an O(n) operation in the number of currently visible
+    // varialbes (~= current size of program). This should be fine since it is
+    // not too frequently used. Also, this way of implementing it keeps the
+    // overhead in internalAppend to a minimum, which is probably more important.
+    public func reuseOrLoadBuiltin(_ name: String) -> Variable {
+        for v in scopeAnalyzer.visibleVariables {
+            if let builtin = loadedBuiltins[v], builtin == name {
+                return v
             }
         }
+        return loadBuiltin(name)
     }
 
-    /// Generates random code at the current position.
-    ///
-    /// Code generation involves executing the configured code generators as well as splicing code from other
-    /// programs in the corpus into the current one.
-    public func generate(n: Int = 1) {
-        currentCodegenBudget = n
-
-        while currentCodegenBudget > 0 {
-            generateInternal()
+    public func reuseOrLoadInt(_ value: Int64) -> Variable {
+        for v in scopeAnalyzer.visibleVariables {
+            if let val = loadedIntegers[v], val == value {
+                return v
+            }
         }
+        return loadInt(value)
     }
 
-    /// Called by a code generator to generate more additional code, for example inside a newly created block.
-    public func generateRecursive() {
-        // Generate at least one instruction, even if already below budget
-        if currentCodegenBudget <= 0 {
-            currentCodegenBudget = 1
+    public func reuseOrLoadAnyInt() -> Variable {
+        // This isn't guaranteed to succeed, but that's probably fine.
+        let val = seenIntegers.randomElement() ?? genInt()
+        return reuseOrLoadInt(val)
+    }
+
+    public func reuseOrLoadFloat(_ value: Double) -> Variable {
+        for v in scopeAnalyzer.visibleVariables {
+            if let val = loadedFloats[v], val == value {
+                return v
+            }
         }
-        generateInternal()
+        return loadFloat(value)
+    }
+
+    public func reuseOrLoadAnyFloat() -> Variable {
+        let val = seenFloats.randomElement() ?? genFloat()
+        return reuseOrLoadFloat(val)
     }
 
 
@@ -846,7 +1128,7 @@ public class ProgramBuilder {
     //
 
     @discardableResult
-    private func perform(_ op: Operation, withInputs inputs: [Variable] = []) -> Instruction {
+    private func emit(_ op: Operation, withInputs inputs: [Variable] = []) -> Instruction {
         var inouts = inputs
         for _ in 0..<op.numOutputs {
             inouts.append(nextVariable())
@@ -854,49 +1136,58 @@ public class ProgramBuilder {
         for _ in 0..<op.numInnerOutputs {
             inouts.append(nextVariable())
         }
-        let instr = Instruction(op, inouts: inouts)
-        internalAppend(instr)
-        return instr
+
+        return internalAppend(Instruction(op, inouts: inouts))
     }
 
     @discardableResult
     public func loadInt(_ value: Int64) -> Variable {
-        return perform(LoadInteger(value: value)).output
+        return emit(LoadInteger(value: value)).output
     }
 
     @discardableResult
     public func loadBigInt(_ value: Int64) -> Variable {
-        return perform(LoadBigInt(value: value)).output
+        return emit(LoadBigInt(value: value)).output
     }
 
     @discardableResult
     public func loadFloat(_ value: Double) -> Variable {
-        return perform(LoadFloat(value: value)).output
+        return emit(LoadFloat(value: value)).output
     }
 
     @discardableResult
     public func loadString(_ value: String) -> Variable {
-        return perform(LoadString(value: value)).output
+        return emit(LoadString(value: value)).output
     }
 
     @discardableResult
     public func loadBool(_ value: Bool) -> Variable {
-        return perform(LoadBoolean(value: value)).output
+        return emit(LoadBoolean(value: value)).output
     }
 
     @discardableResult
     public func loadUndefined() -> Variable {
-        return perform(LoadUndefined()).output
+        return emit(LoadUndefined()).output
     }
 
     @discardableResult
     public func loadNull() -> Variable {
-        return perform(LoadNull()).output
+        return emit(LoadNull()).output
+    }
+
+    @discardableResult
+    public func loadThis() -> Variable {
+        return emit(LoadThis()).output
+    }
+
+    @discardableResult
+    public func loadArguments() -> Variable {
+        return emit(LoadArguments()).output
     }
 
     @discardableResult
     public func loadRegExp(_ value: String, _ flags: RegExpFlags) -> Variable {
-        return perform(LoadRegExp(value: value, flags: flags)).output
+        return emit(LoadRegExp(value: value, flags: flags)).output
     }
 
     @discardableResult
@@ -907,12 +1198,12 @@ public class ProgramBuilder {
             propertyNames.append(k)
             propertyValues.append(v)
         }
-        return perform(CreateObject(propertyNames: propertyNames), withInputs: propertyValues).output
+        return emit(CreateObject(propertyNames: propertyNames), withInputs: propertyValues).output
     }
 
     @discardableResult
     public func createArray(with initialValues: [Variable]) -> Variable {
-        return perform(CreateArray(numInitialValues: initialValues.count), withInputs: initialValues).output
+        return emit(CreateArray(numInitialValues: initialValues.count), withInputs: initialValues).output
     }
 
     @discardableResult
@@ -923,249 +1214,348 @@ public class ProgramBuilder {
             propertyNames.append(k)
             propertyValues.append(v)
         }
-        return perform(CreateObjectWithSpread(propertyNames: propertyNames, numSpreads: spreads.count), withInputs: propertyValues + spreads).output
+        return emit(CreateObjectWithSpread(propertyNames: propertyNames, numSpreads: spreads.count), withInputs: propertyValues + spreads).output
     }
 
     @discardableResult
     public func createArray(with initialValues: [Variable], spreading spreads: [Bool]) -> Variable {
-        return perform(CreateArrayWithSpread(numInitialValues: initialValues.count, spreads: spreads), withInputs: initialValues).output
+        assert(initialValues.count == spreads.count)
+        return emit(CreateArrayWithSpread(spreads: spreads), withInputs: initialValues).output
+    }
+
+    @discardableResult
+    public func createTemplateString(from parts: [String], interpolating interpolatedValues: [Variable]) -> Variable {
+        return emit(CreateTemplateString(parts: parts), withInputs: interpolatedValues).output
     }
 
     @discardableResult
     public func loadBuiltin(_ name: String) -> Variable {
-        return perform(LoadBuiltin(builtinName: name)).output
+        return emit(LoadBuiltin(builtinName: name)).output
     }
 
     @discardableResult
     public func loadProperty(_ name: String, of object: Variable) -> Variable {
-        return perform(LoadProperty(propertyName: name), withInputs: [object]).output
+        return emit(LoadProperty(propertyName: name), withInputs: [object]).output
     }
 
     public func storeProperty(_ value: Variable, as name: String, on object: Variable) {
-        perform(StoreProperty(propertyName: name), withInputs: [object, value])
+        emit(StoreProperty(propertyName: name), withInputs: [object, value])
     }
 
-    public func deleteProperty(_ name: String, of object: Variable) {
-        perform(DeleteProperty(propertyName: name), withInputs: [object])
+    public func storeProperty(_ value: Variable, as name: String, with op: BinaryOperator, on object: Variable) {
+        emit(StorePropertyWithBinop(propertyName: name, operator: op), withInputs: [object, value])
+    }
+
+    @discardableResult
+    public func deleteProperty(_ name: String, of object: Variable) -> Variable {
+        emit(DeleteProperty(propertyName: name), withInputs: [object]).output
     }
 
     @discardableResult
     public func loadElement(_ index: Int64, of array: Variable) -> Variable {
-        return perform(LoadElement(index: index), withInputs: [array]).output
+        return emit(LoadElement(index: index), withInputs: [array]).output
     }
 
     public func storeElement(_ value: Variable, at index: Int64, of array: Variable) {
-        perform(StoreElement(index: index), withInputs: [array, value])
+        emit(StoreElement(index: index), withInputs: [array, value])
     }
 
-    public func deleteElement(_ index: Int64, of array: Variable) {
-        perform(DeleteElement(index: index), withInputs: [array])
+    public func storeElement(_ value: Variable, at index: Int64, with op: BinaryOperator, of array: Variable) {
+        emit(StoreElementWithBinop(index: index, operator: op), withInputs: [array, value])
+    }
+
+    @discardableResult
+    public func deleteElement(_ index: Int64, of array: Variable) -> Variable {
+        emit(DeleteElement(index: index), withInputs: [array]).output
     }
 
     @discardableResult
     public func loadComputedProperty(_ name: Variable, of object: Variable) -> Variable {
-        return perform(LoadComputedProperty(), withInputs: [object, name]).output
+        return emit(LoadComputedProperty(), withInputs: [object, name]).output
     }
 
     public func storeComputedProperty(_ value: Variable, as name: Variable, on object: Variable) {
-        perform(StoreComputedProperty(), withInputs: [object, name, value])
+        emit(StoreComputedProperty(), withInputs: [object, name, value])
     }
 
-    public func deleteComputedProperty(_ name: Variable, of object: Variable) {
-        perform(DeleteComputedProperty(), withInputs: [object, name])
-    }
-
-    @discardableResult
-    public func doTypeof(_ v: Variable) -> Variable {
-        return perform(TypeOf(), withInputs: [v]).output
+    public func storeComputedProperty(_ value: Variable, as name: Variable, with op: BinaryOperator, on object: Variable) {
+        emit(StoreComputedPropertyWithBinop(operator: op), withInputs: [object, name, value])
     }
 
     @discardableResult
-    public func doInstanceOf(_ v: Variable, _ type: Variable) -> Variable {
-        return perform(InstanceOf(), withInputs: [v, type]).output
+    public func deleteComputedProperty(_ name: Variable, of object: Variable) -> Variable {
+        emit(DeleteComputedProperty(), withInputs: [object, name]).output
     }
 
     @discardableResult
-    public func doIn(_ prop: Variable, _ obj: Variable) -> Variable {
-        return perform(In(), withInputs: [prop, obj]).output
+    public func typeof(_ v: Variable) -> Variable {
+        return emit(TypeOf(), withInputs: [v]).output
     }
 
     @discardableResult
-    public func definePlainFunction(withSignature signature: FunctionSignature, _ body: ([Variable]) -> ()) -> Variable {
-        let instr = perform(BeginPlainFunctionDefinition(signature: signature))
+    public func testInstanceOf(_ v: Variable, _ type: Variable) -> Variable {
+        return emit(TestInstanceOf(), withInputs: [v, type]).output
+    }
+
+    @discardableResult
+    public func testIn(_ prop: Variable, _ obj: Variable) -> Variable {
+        return emit(TestIn(), withInputs: [prop, obj]).output
+    }
+
+    public func explore(_ v: Variable, id: String, withArgs arguments: [Variable]) {
+        emit(Explore(id: id, numArguments: arguments.count), withInputs: [v] + arguments)
+    }
+
+    // Helper struct to describe function definitions.
+    // This allows defining functions just through the number of parameters or through a Signature, which also contains parameter types.
+    // Note however that FunctionSignatures are not associated with the generated operations and will therefore just be valid for the lifetime
+    // of this ProgramBuilder. The reason for this behaviour is that it is generally not possible to preserve the type informatio across program
+    // mutations (a mutator may change the callsite of a function or modify the uses of a parameter, effectively invalidating the signature).
+    public struct FunctionDescriptor {
+        fileprivate let parameters: Parameters
+        fileprivate let signature: Signature?
+
+        public static func parameters(n: Int, hasRestParameter: Bool = false) -> FunctionDescriptor {
+            return FunctionDescriptor(Parameters(count: n, hasRestParameter: hasRestParameter))
+        }
+
+        public static func parameters(_ inputTypes: [Signature.Parameter]) -> FunctionDescriptor {
+            let signature = inputTypes => .unknown
+            return .signature(signature)
+        }
+
+        public static func signature(_ signature: Signature) -> FunctionDescriptor {
+            let parameters = Parameters(count: signature.numParameters, hasRestParameter: signature.hasRestParameter)
+            return FunctionDescriptor(parameters, signature)
+        }
+
+        private init(_ parameters: Parameters, _ signature: Signature? = nil) {
+            self.parameters = parameters
+            self.signature = signature
+            assert(signature == nil || signature?.numParameters == parameters.count)
+        }
+    }
+
+    @discardableResult
+    public func buildPlainFunction(with descriptor: FunctionDescriptor, isStrict: Bool = false, _ body: ([Variable]) -> ()) -> Variable {
+        setSignatureForNextFunction(descriptor.signature)
+        let instr = emit(BeginPlainFunction(parameters: descriptor.parameters, isStrict: isStrict))
         body(Array(instr.innerOutputs))
-        perform(EndPlainFunctionDefinition())
+        emit(EndPlainFunction())
         return instr.output
     }
 
     @discardableResult
-    public func defineStrictFunction(withSignature signature: FunctionSignature, _ body: ([Variable]) -> ()) -> Variable {
-        let instr = perform(BeginStrictFunctionDefinition(signature: signature))
+    public func buildArrowFunction(with descriptor: FunctionDescriptor, isStrict: Bool = false, _ body: ([Variable]) -> ()) -> Variable {
+        setSignatureForNextFunction(descriptor.signature)
+        let instr = emit(BeginArrowFunction(parameters: descriptor.parameters, isStrict: isStrict))
         body(Array(instr.innerOutputs))
-        perform(EndStrictFunctionDefinition())
+        emit(EndArrowFunction())
         return instr.output
     }
 
     @discardableResult
-    public func defineArrowFunction(withSignature signature: FunctionSignature, _ body: ([Variable]) -> ()) -> Variable {
-        let instr = perform(BeginArrowFunctionDefinition(signature: signature))
+    public func buildGeneratorFunction(with descriptor: FunctionDescriptor, isStrict: Bool = false, _ body: ([Variable]) -> ()) -> Variable {
+        setSignatureForNextFunction(descriptor.signature)
+        let instr = emit(BeginGeneratorFunction(parameters: descriptor.parameters, isStrict: isStrict))
         body(Array(instr.innerOutputs))
-        perform(EndArrowFunctionDefinition())
+        emit(EndGeneratorFunction())
         return instr.output
     }
 
     @discardableResult
-    public func defineGeneratorFunction(withSignature signature: FunctionSignature, _ body: ([Variable]) -> ()) -> Variable {
-        let instr = perform(BeginGeneratorFunctionDefinition(signature: signature))
+    public func buildAsyncFunction(with descriptor: FunctionDescriptor, isStrict: Bool = false, _ body: ([Variable]) -> ()) -> Variable {
+        setSignatureForNextFunction(descriptor.signature)
+        let instr = emit(BeginAsyncFunction(parameters: descriptor.parameters, isStrict: isStrict))
         body(Array(instr.innerOutputs))
-        perform(EndGeneratorFunctionDefinition())
+        emit(EndAsyncFunction())
         return instr.output
     }
 
     @discardableResult
-    public func defineAsyncFunction(withSignature signature: FunctionSignature, _ body: ([Variable]) -> ()) -> Variable {
-        let instr = perform(BeginAsyncFunctionDefinition(signature: signature))
+    public func buildAsyncArrowFunction(with descriptor: FunctionDescriptor, isStrict: Bool = false, _ body: ([Variable]) -> ()) -> Variable {
+        setSignatureForNextFunction(descriptor.signature)
+        let instr = emit(BeginAsyncArrowFunction(parameters: descriptor.parameters, isStrict: isStrict))
         body(Array(instr.innerOutputs))
-        perform(EndAsyncFunctionDefinition())
+        emit(EndAsyncArrowFunction())
         return instr.output
     }
 
     @discardableResult
-    public func defineAsyncArrowFunction(withSignature signature: FunctionSignature, _ body: ([Variable]) -> ()) -> Variable {
-        let instr = perform(BeginAsyncArrowFunctionDefinition(signature: signature))
+    public func buildAsyncGeneratorFunction(with descriptor: FunctionDescriptor, isStrict: Bool = false, _ body: ([Variable]) -> ()) -> Variable {
+        setSignatureForNextFunction(descriptor.signature)
+        let instr = emit(BeginAsyncGeneratorFunction(parameters: descriptor.parameters, isStrict: isStrict))
         body(Array(instr.innerOutputs))
-        perform(EndAsyncArrowFunctionDefinition())
+        emit(EndAsyncGeneratorFunction())
         return instr.output
     }
 
-    @discardableResult
-    public func defineAsyncGeneratorFunction(withSignature signature: FunctionSignature, _ body: ([Variable]) -> ()) -> Variable {
-        let instr = perform(BeginAsyncGeneratorFunctionDefinition(signature: signature))
-        body(Array(instr.innerOutputs))
-        perform(EndAsyncGeneratorFunctionDefinition())
-        return instr.output
-    }
-
-    public func doReturn(value: Variable) {
-        perform(Return(), withInputs: [value])
-    }
-
-    public func yield(value: Variable) {
-        perform(Yield(), withInputs: [value])
-    }
-
-    public func yieldEach(value: Variable) {
-        perform(YieldEach(), withInputs: [value])
+    public func doReturn(_ value: Variable) {
+        emit(Return(), withInputs: [value])
     }
 
     @discardableResult
-    public func await(value: Variable) -> Variable {
-        return perform(Await(), withInputs: [value]).output
+    public func yield(_ value: Variable) -> Variable {
+        return emit(Yield(), withInputs: [value]).output
+    }
+
+    public func yieldEach(_ value: Variable) {
+        emit(YieldEach(), withInputs: [value])
     }
 
     @discardableResult
-    public func callMethod(_ name: String, on object: Variable, withArgs arguments: [Variable]) -> Variable {
-        return perform(CallMethod(methodName: name, numArguments: arguments.count), withInputs: [object] + arguments).output
-    }
-
-    @discardableResult
-    public func callComputedMethod(_ name: Variable, on object: Variable, withArgs arguments: [Variable]) -> Variable {
-        return perform(CallComputedMethod(numArguments: arguments.count), withInputs: [object, name] + arguments).output
+    public func await(_ value: Variable) -> Variable {
+        return emit(Await(), withInputs: [value]).output
     }
 
     @discardableResult
     public func callFunction(_ function: Variable, withArgs arguments: [Variable]) -> Variable {
-        return perform(CallFunction(numArguments: arguments.count), withInputs: [function] + arguments).output
-    }
-
-    @discardableResult
-    public func construct(_ constructor: Variable, withArgs arguments: [Variable]) -> Variable {
-        return perform(Construct(numArguments: arguments.count), withInputs: [constructor] + arguments).output
+        return emit(CallFunction(numArguments: arguments.count), withInputs: [function] + arguments).output
     }
 
     @discardableResult
     public func callFunction(_ function: Variable, withArgs arguments: [Variable], spreading spreads: [Bool]) -> Variable {
-        return perform(CallFunctionWithSpread(numArguments: arguments.count, spreads: spreads), withInputs: [function] + arguments).output
+        guard !spreads.isEmpty else { return callFunction(function, withArgs: arguments) }
+        return emit(CallFunctionWithSpread(numArguments: arguments.count, spreads: spreads), withInputs: [function] + arguments).output
+    }
+
+    @discardableResult
+    public func construct(_ constructor: Variable, withArgs arguments: [Variable]) -> Variable {
+        return emit(Construct(numArguments: arguments.count), withInputs: [constructor] + arguments).output
+    }
+
+    @discardableResult
+    public func construct(_ constructor: Variable, withArgs arguments: [Variable], spreading spreads: [Bool]) -> Variable {
+        guard !spreads.isEmpty else { return construct(constructor, withArgs: arguments) }
+        return emit(ConstructWithSpread(numArguments: arguments.count, spreads: spreads), withInputs: [constructor] + arguments).output
+    }
+
+    @discardableResult
+    public func callMethod(_ name: String, on object: Variable, withArgs arguments: [Variable]) -> Variable {
+        return emit(CallMethod(methodName: name, numArguments: arguments.count), withInputs: [object] + arguments).output
+    }
+
+    @discardableResult
+    public func callMethod(_ name: String, on object: Variable, withArgs arguments: [Variable], spreading spreads: [Bool]) -> Variable {
+        guard !spreads.isEmpty else { return callMethod(name, on: object, withArgs: arguments) }
+        return emit(CallMethodWithSpread(methodName: name, numArguments: arguments.count, spreads: spreads), withInputs: [object] + arguments).output
+    }
+
+    @discardableResult
+    public func callComputedMethod(_ name: Variable, on object: Variable, withArgs arguments: [Variable]) -> Variable {
+        return emit(CallComputedMethod(numArguments: arguments.count), withInputs: [object, name] + arguments).output
+    }
+
+    @discardableResult
+    public func callComputedMethod(_ name: Variable, on object: Variable, withArgs arguments: [Variable], spreading spreads: [Bool]) -> Variable {
+        guard !spreads.isEmpty else { return callComputedMethod(name, on: object, withArgs: arguments) }
+        return emit(CallComputedMethodWithSpread(numArguments: arguments.count, spreads: spreads), withInputs: [object, name] + arguments).output
     }
 
     @discardableResult
     public func unary(_ op: UnaryOperator, _ input: Variable) -> Variable {
-        return perform(UnaryOperation(op), withInputs: [input]).output
+        return emit(UnaryOperation(op), withInputs: [input]).output
     }
 
     @discardableResult
     public func binary(_ lhs: Variable, _ rhs: Variable, with op: BinaryOperator) -> Variable {
-        return perform(BinaryOperation(op), withInputs: [lhs, rhs]).output
+        return emit(BinaryOperation(op), withInputs: [lhs, rhs]).output
+    }
+
+    public func reassign(_ output: Variable, to input: Variable, with op: BinaryOperator) {
+        emit(ReassignWithBinop(op), withInputs: [output, input])
     }
 
     @discardableResult
     public func dup(_ v: Variable) -> Variable {
-        return perform(Dup(), withInputs: [v]).output
+        return emit(Dup(), withInputs: [v]).output
     }
 
     public func reassign(_ output: Variable, to input: Variable) {
-        perform(Reassign(), withInputs: [output, input])
+        emit(Reassign(), withInputs: [output, input])
     }
 
     @discardableResult
-    public func compare(_ lhs: Variable, _ rhs: Variable, with comparator: Comparator) -> Variable {
-        return perform(Compare(comparator), withInputs: [lhs, rhs]).output
+    public func destruct(_ input: Variable, selecting indices: [Int], hasRestElement: Bool = false) -> [Variable] {
+        let outputs = emit(DestructArray(indices: indices, hasRestElement: hasRestElement), withInputs: [input]).outputs
+        return Array(outputs)
     }
+
+    public func destruct(_ input: Variable, selecting indices: [Int], into outputs: [Variable], hasRestElement: Bool = false) {
+        emit(DestructArrayAndReassign(indices: indices, hasRestElement: hasRestElement), withInputs: [input] + outputs)
+    }
+
+    @discardableResult
+    public func destruct(_ input: Variable, selecting properties: [String], hasRestElement: Bool = false) -> [Variable] {
+        let outputs = emit(DestructObject(properties: properties, hasRestElement: hasRestElement), withInputs: [input]).outputs
+        return Array(outputs)
+    }
+
+    public func destruct(_ input: Variable, selecting properties: [String], into outputs: [Variable], hasRestElement: Bool = false) {
+        emit(DestructObjectAndReassign(properties: properties, hasRestElement: hasRestElement), withInputs: [input] + outputs)
+    }
+
+    @discardableResult
+    public func compare(_ lhs: Variable, with rhs: Variable, using comparator: Comparator) -> Variable {
+        return emit(Compare(comparator), withInputs: [lhs, rhs]).output
+    }
+
     @discardableResult
     public func conditional(_ condition: Variable, _ lhs: Variable, _ rhs: Variable) -> Variable {
-        return perform(ConditionalOperation(), withInputs: [condition, lhs, rhs]).output
-    }
-    public func eval(_ string: String, with arguments: [Variable] = []) {
-        perform(Eval(string, numArguments: arguments.count), withInputs: arguments)
+        return emit(ConditionalOperation(), withInputs: [condition, lhs, rhs]).output
     }
 
-    public func with(_ scopeObject: Variable, body: () -> Void) {
-        perform(BeginWith(), withInputs: [scopeObject])
+    public func eval(_ string: String, with arguments: [Variable] = []) {
+        emit(Eval(string, numArguments: arguments.count), withInputs: arguments)
+    }
+
+    public func buildWith(_ scopeObject: Variable, body: () -> Void) {
+        emit(BeginWith(), withInputs: [scopeObject])
         body()
-        perform(EndWith())
+        emit(EndWith())
     }
 
     @discardableResult
     public func loadFromScope(id: String) -> Variable {
-        return perform(LoadFromScope(id: id)).output
+        return emit(LoadFromScope(id: id)).output
     }
 
     public func storeToScope(_ value: Variable, as id: String) {
-        perform(StoreToScope(id: id), withInputs: [value])
+        emit(StoreToScope(id: id), withInputs: [value])
     }
 
     public func nop(numOutputs: Int = 0) {
-        perform(Nop(numOutputs: numOutputs), withInputs: [])
+        emit(Nop(numOutputs: numOutputs), withInputs: [])
     }
 
     public struct ClassBuilder {
         public typealias MethodBodyGenerator = ([Variable]) -> ()
         public typealias ConstructorBodyGenerator = MethodBodyGenerator
 
-        fileprivate var constructor: (parameters: [Type], generator: ConstructorBodyGenerator)? = nil
-        fileprivate var methods: [(name: String, signature: FunctionSignature, generator: ConstructorBodyGenerator)] = []
+        fileprivate var constructor: (descriptor: FunctionDescriptor, generator: ConstructorBodyGenerator)? = nil
+        fileprivate var methods: [(name: String, descriptor: FunctionDescriptor, generator: ConstructorBodyGenerator)] = []
         fileprivate var properties: [String] = []
 
         // This struct is only created by defineClass below
         fileprivate init() {}
 
-        public mutating func defineConstructor(withParameters parameters: [Type], _ generator: @escaping ConstructorBodyGenerator) {
-            constructor = (parameters, generator)
+        public mutating func defineConstructor(with descriptor: FunctionDescriptor, _ generator: @escaping ConstructorBodyGenerator) {
+            constructor = (descriptor, generator)
         }
 
         public mutating func defineProperty(_ name: String) {
             properties.append(name)
         }
 
-        public mutating func defineMethod(_ name: String, withSignature signature: FunctionSignature, _ generator: @escaping MethodBodyGenerator) {
-            methods.append((name, signature, generator))
+        public mutating func defineMethod(_ name: String, with descriptor: FunctionDescriptor, _ generator: @escaping MethodBodyGenerator) {
+            methods.append((name, descriptor, generator))
         }
     }
 
     public typealias ClassBodyGenerator = (inout ClassBuilder) -> ()
 
     @discardableResult
-    public func defineClass(withSuperclass superclass: Variable? = nil,
+    public func buildClass(withSuperclass superclass: Variable? = nil,
                             _ body: ClassBodyGenerator) -> Variable {
         // First collect all information about the class and the generators for constructor and method bodies
         var builder = ClassBuilder()
@@ -1173,137 +1563,184 @@ public class ProgramBuilder {
 
         // Now compute the instance type and define the class
         let properties = builder.properties
-        let methods = builder.methods.map({ ($0.name, $0.signature )})
-        let constructorParameters = builder.constructor?.parameters ?? FunctionSignature.forUnknownFunction.inputTypes
+        let methods = builder.methods.map({ ($0.name, $0.descriptor.parameters )})
+        let constructorDescriptor = builder.constructor?.descriptor ?? .parameters(n: 0)
         let hasSuperclass = superclass != nil
-        let classDefinition = perform(BeginClassDefinition(hasSuperclass: hasSuperclass,
-                                                           constructorParameters: constructorParameters,
-                                                           instanceProperties: properties,
-                                                           instanceMethods: methods),
-                                      withInputs: hasSuperclass ? [superclass!] : [])
+        setSignatureForNextFunction(builder.constructor?.descriptor.signature)
+        let classDefinition = emit(BeginClass(hasSuperclass: hasSuperclass,
+                                              constructorParameters: constructorDescriptor.parameters,
+                                              instanceProperties: properties,
+                                              instanceMethods: methods),
+                                   withInputs: hasSuperclass ? [superclass!] : [])
 
-        // The code directly following the BeginClassDefinition is the body of the constructor
+        // The code directly following the BeginClass is the body of the constructor
         builder.constructor?.generator(Array(classDefinition.innerOutputs))
 
         // Next are the bodies of the methods
         for method in builder.methods {
-            let methodDefinition = perform(BeginMethodDefinition(numParameters: method.signature.inputTypes.count), withInputs: [])
+            setSignatureForNextFunction(method.descriptor.signature)
+            let methodDefinition = emit(BeginMethod(numParameters: method.descriptor.parameters.count), withInputs: [])
             method.generator(Array(methodDefinition.innerOutputs))
         }
 
-        perform(EndClassDefinition())
+        emit(EndClass())
 
         return classDefinition.output
     }
 
     public func callSuperConstructor(withArgs arguments: [Variable]) {
-        perform(CallSuperConstructor(numArguments: arguments.count), withInputs: arguments)
+        emit(CallSuperConstructor(numArguments: arguments.count), withInputs: arguments)
     }
 
     @discardableResult
     public func callSuperMethod(_ name: String, withArgs arguments: [Variable]) -> Variable {
-        return perform(CallSuperMethod(methodName: name, numArguments: arguments.count), withInputs: arguments).output
+        return emit(CallSuperMethod(methodName: name, numArguments: arguments.count), withInputs: arguments).output
     }
 
     @discardableResult
     public func loadSuperProperty(_ name: String) -> Variable {
-        return perform(LoadSuperProperty(propertyName: name)).output
+        return emit(LoadSuperProperty(propertyName: name)).output
     }
 
     public func storeSuperProperty(_ value: Variable, as name: String) {
-        perform(StoreSuperProperty(propertyName: name), withInputs: [value])
+        emit(StoreSuperProperty(propertyName: name), withInputs: [value])
     }
 
-    public func beginIf(_ conditional: Variable, _ body: () -> Void) {
-        perform(BeginIf(), withInputs: [conditional])
+    public func storeSuperProperty(_ value: Variable, as name: String, with op: BinaryOperator) {
+        emit(StoreSuperPropertyWithBinop(propertyName: name, operator: op), withInputs: [value])
+    }
+
+    public func buildIfElse(_ condition: Variable, ifBody: () -> Void, elseBody: () -> Void) {
+        emit(BeginIf(), withInputs: [condition])
+        ifBody()
+        emit(BeginElse())
+        elseBody()
+        emit(EndIf())
+    }
+
+    public struct SwitchBuilder {
+        public typealias SwitchCaseGenerator = () -> ()
+        fileprivate var caseGenerators: [(value: Variable?, fallsthrough: Bool, body: SwitchCaseGenerator)] = []
+        var hasDefault: Bool = false
+
+        public mutating func addDefault(fallsThrough: Bool = false, body: @escaping SwitchCaseGenerator) {
+            assert(!hasDefault, "Cannot add more than one default case")
+            hasDefault = true
+            caseGenerators.append((nil, fallsThrough, body))
+        }
+
+        public mutating func add(_ v: Variable, fallsThrough: Bool = false, body: @escaping SwitchCaseGenerator) {
+            caseGenerators.append((v, fallsThrough, body))
+        }
+    }
+
+    public func buildSwitch(on switchVar: Variable, body: (inout SwitchBuilder) -> ()) {
+        emit(BeginSwitch(), withInputs: [switchVar])
+
+        var builder = SwitchBuilder()
+        body(&builder)
+
+        for (val, fallsThrough, bodyGenerator) in builder.caseGenerators {
+            let inputs = val == nil ? [] : [val!]
+            if inputs.count == 0 {
+                emit(BeginSwitchDefaultCase(), withInputs: inputs)
+            } else {
+                emit(BeginSwitchCase(), withInputs: inputs)
+            }
+            bodyGenerator()
+            emit(EndSwitchCase(fallsThrough: fallsThrough))
+        }
+        emit(EndSwitch())
+    }
+
+    public func buildSwitchCase(forCase caseVar: Variable, fallsThrough: Bool, body: () -> ()) {
+        emit(BeginSwitchCase(), withInputs: [caseVar])
         body()
+        emit(EndSwitchCase(fallsThrough: fallsThrough))
     }
 
-    public func beginElse(_ body: () -> Void) {
-        perform(BeginElse())
+    public func switchBreak() {
+        emit(SwitchBreak())
+    }
+
+    public func buildWhileLoop(_ lhs: Variable, _ comparator: Comparator, _ rhs: Variable, _ body: () -> Void) {
+        emit(BeginWhileLoop(comparator: comparator), withInputs: [lhs, rhs])
         body()
+        emit(EndWhileLoop())
     }
 
-    public func endIf() {
-        perform(EndIf())
-    }
-
-    public func whileLoop(_ lhs: Variable, _ comparator: Comparator, _ rhs: Variable, _ body: () -> Void) {
-        perform(BeginWhile(comparator: comparator), withInputs: [lhs, rhs])
+    public func buildDoWhileLoop(_ lhs: Variable, _ comparator: Comparator, _ rhs: Variable, _ body: () -> Void) {
+        emit(BeginDoWhileLoop(comparator: comparator), withInputs: [lhs, rhs])
         body()
-        perform(EndWhile())
+        emit(EndDoWhileLoop())
     }
 
-    public func doWhileLoop(_ lhs: Variable, _ comparator: Comparator, _ rhs: Variable, _ body: () -> Void) {
-        perform(BeginDoWhile(comparator: comparator), withInputs: [lhs, rhs])
-        body()
-        perform(EndDoWhile())
-    }
-
-    public func forLoop(_ start: Variable, _ comparator: Comparator, _ end: Variable, _ op: BinaryOperator, _ rhs: Variable, _ body: (Variable) -> ()) {
-        let i = perform(BeginFor(comparator: comparator, op: op), withInputs: [start, end, rhs]).innerOutput
+    public func buildForLoop(_ start: Variable, _ comparator: Comparator, _ end: Variable, _ op: BinaryOperator, _ rhs: Variable, _ body: (Variable) -> ()) {
+        let i = emit(BeginForLoop(comparator: comparator, op: op), withInputs: [start, end, rhs]).innerOutput
         body(i)
-        perform(EndFor())
+        emit(EndForLoop())
     }
 
-    public func forInLoop(_ obj: Variable, _ body: (Variable) -> ()) {
-        let i = perform(BeginForIn(), withInputs: [obj]).innerOutput
+    public func buildForInLoop(_ obj: Variable, _ body: (Variable) -> ()) {
+        let i = emit(BeginForInLoop(), withInputs: [obj]).innerOutput
         body(i)
-        perform(EndForIn())
+        emit(EndForInLoop())
     }
 
-    public func forOfLoop(_ obj: Variable, _ body: (Variable) -> ()) {
-        let i = perform(BeginForOf(), withInputs: [obj]).innerOutput
+    public func buildForOfLoop(_ obj: Variable, _ body: (Variable) -> ()) {
+        let i = emit(BeginForOfLoop(), withInputs: [obj]).innerOutput
         body(i)
-        perform(EndForOf())
+        emit(EndForOfLoop())
     }
 
-    public func doBreak() {
-        perform(Break(), withInputs: [])
+    public func buildForOfLoop(_ obj: Variable, selecting indices: [Int], hasRestElement: Bool = false, _ body: ([Variable]) -> ()) {
+        let instr = emit(BeginForOfWithDestructLoop(indices: indices, hasRestElement: hasRestElement), withInputs: [obj])
+        body(Array(instr.innerOutputs))
+        emit(EndForOfLoop())
     }
 
-    public func doContinue() {
-        perform(Continue(), withInputs: [])
+    public func loopBreak() {
+        emit(LoopBreak())
     }
 
-    public func beginTry(_ body: () -> Void) {
-        perform(BeginTry())
-        body()
+    public func loopContinue() {
+        emit(LoopContinue(), withInputs: [])
     }
 
-    public func beginCatch(_ body: (Variable) -> ()) {
-        let exception = perform(BeginCatch()).innerOutput
-        body(exception)
-    }
-
-    public func beginFinally(_ body: () -> Void) {
-        perform(BeginFinally())
-        body()
-    }
-
-    public func endTryCatch() {
-        perform(EndTryCatch())
+    public func buildTryCatchFinally(tryBody: () -> (), catchBody: ((Variable) -> ())? = nil, finallyBody: (() -> ())? = nil) {
+        assert(catchBody != nil || finallyBody != nil, "Must have either a Catch or a Finally block (or both)")
+        emit(BeginTry())
+        tryBody()
+        if let catchBody = catchBody {
+            let exception = emit(BeginCatch()).innerOutput
+            catchBody(exception)
+        }
+        if let finallyBody = finallyBody {
+            emit(BeginFinally())
+            finallyBody()
+        }
+        emit(EndTryCatchFinally())
     }
 
     public func throwException(_ value: Variable) {
-        perform(ThrowException(), withInputs: [value])
+        emit(ThrowException(), withInputs: [value])
     }
 
-    public func codeString(_ body: () -> Variable) -> Variable {
-        let instr = perform(BeginCodeString())
-        let returnValue = body()
-        perform(EndCodeString(), withInputs: [returnValue])
+    public func buildCodeString(_ body: () -> ()) -> Variable {
+        let instr = emit(BeginCodeString())
+        body()
+        emit(EndCodeString())
         return instr.output
     }
 
     public func blockStatement(_ body: () -> Void) {
-        perform(BeginBlockStatement())
+        emit(BeginBlockStatement())
         body()
-        perform(EndBlockStatement())
+        emit(EndBlockStatement())
     }
 
     public func doPrint(_ value: Variable) {
-        perform(Print(), withInputs: [value])
+        emit(Print(), withInputs: [value])
     }
 
 
@@ -1314,48 +1751,60 @@ public class ProgramBuilder {
         return Variable(number: numVariables - 1)
     }
 
-    private func internalAppend(_ instr: Instruction) {
+    @discardableResult
+    private func internalAppend(_ instr: Instruction) -> Instruction {
         // Basic integrity checking
         assert(!instr.inouts.contains(where: { $0.number >= numVariables }))
+        assert(instr.op.requiredContext.isSubset(of: contextAnalyzer.context))
 
-        code.append(instr)
+        // The returned instruction will also contain its index in the program. Use that so the analyzers have access to the index.
+        let instr = code.append(instr)
 
-        currentCodegenBudget -= 1
+        currentBuildingBudget -= 1
 
         // Update our analyses
         scopeAnalyzer.analyze(instr)
         contextAnalyzer.analyze(instr)
-        if instr.op is BeginAnyFunctionDefinition {
+        // TODO could this become an Analyzer?
+        updateValueAnalysis(instr)
+        if instr.op is BeginAnyFunction {
             openFunctions.append(instr.output)
-        } else if instr.op is EndAnyFunctionDefinition {
+        } else if instr.op is EndAnyFunction {
             openFunctions.removeLast()
         }
 
         // Update type information
-        let typeChanges = interpreter?.execute(instr) ?? []
-        for (variable, type) in typeChanges {
-            assert(scopeAnalyzer.visibleVariables.contains(variable))
-            // We should record only changes when type really changes
-            // But we cannot distinguish following changes because .unknown is default type:
-            // 1. nil -> .unknown
-            // 2. .unknwon -> .unknown
-            assert(type != types.getType(of: variable, after: code.lastInstruction.index) || type == .unknown)
-            types.setType(of: variable, to: type, after: code.lastInstruction.index, quality: .inferred)
-        }
+        jsTyper.analyze(instr)
 
-        updateConstantPool(instr.op)
+        return instr
     }
 
-    /// Update the set of previously seen property names and integer values with the provided operation.
-    private func updateConstantPool(_ operation: Operation) {
-        switch operation {
+    /// Set the signature for the next function, method, or constructor, which must be the the start of a function or method definition.
+    /// Function/method signatures are only valid for the duration of the program generation, as they cannot be preserved across mutations.
+    /// As such, these signatures are linked to their instruction through the index of the instruction in the program.
+    private func setSignatureForNextFunction(_ maybeSignature: Signature?) {
+        guard let signature = maybeSignature else { return }
+        jsTyper.setSignature(forInstructionAt: code.count, to: signature)
+    }
+
+    /// Update value analysis. In particular the set of seen values and the variables that contain them for variable reuse.
+    private func updateValueAnalysis(_ instr: Instruction) {
+        switch instr.op {
         case let op as LoadInteger:
             seenIntegers.insert(op.value)
+            loadedIntegers[instr.output] = op.value
         case let op as LoadBigInt:
             seenIntegers.insert(op.value)
+        case let op as LoadFloat:
+            seenFloats.insert(op.value)
+            loadedFloats[instr.output] = op.value
+        case let op as LoadBuiltin:
+            loadedBuiltins[instr.output] = op.builtinName
         case let op as LoadProperty:
             seenPropertyNames.insert(op.propertyName)
         case let op as StoreProperty:
+            seenPropertyNames.insert(op.propertyName)
+        case let op as StorePropertyWithBinop:
             seenPropertyNames.insert(op.propertyName)
         case let op as DeleteProperty:
             seenPropertyNames.insert(op.propertyName)
@@ -1363,12 +1812,23 @@ public class ProgramBuilder {
             seenIntegers.insert(op.index)
         case let op as StoreElement:
             seenIntegers.insert(op.index)
+        case let op as StoreElementWithBinop:
+            seenIntegers.insert(op.index)
         case let op as DeleteElement:
             seenIntegers.insert(op.index)
         case let op as CreateObject:
             seenPropertyNames.formUnion(op.propertyNames)
         default:
             break
+        }
+
+        for v in instr.inputs {
+            if instr.reassigns(v) {
+                // Remove input from loaded variable sets
+                loadedBuiltins.removeValue(forKey: v)
+                loadedIntegers.removeValue(forKey: v)
+                loadedFloats.removeValue(forKey: v)
+            }
         }
     }
 }

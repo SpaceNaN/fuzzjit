@@ -16,7 +16,6 @@ syntax = "proto3";
 package fuzzilli.protobuf;
 
 import "operations.proto";
-import "typesystem.proto";
 
 message Instruction {
     // The operation is either encoded as an index, referring to the nth operation
@@ -33,61 +32,75 @@ message Instruction {
         LoadBoolean loadBoolean = 8;
         LoadUndefined loadUndefined = 9;
         LoadNull loadNull = 10;
+        LoadThis loadThis = 65;
+        LoadArguments loadArguments = 66;
         LoadRegExp loadRegExp = 77;
         CreateObject createObject = 11;
         CreateArray createArray = 12;
+        CreateTemplateString createTemplateString = 102;
         CreateObjectWithSpread createObjectWithSpread = 13;
         CreateArrayWithSpread createArrayWithSpread = 14;
         LoadBuiltin loadBuiltin = 15;
         LoadProperty loadProperty = 16;
         StoreProperty storeProperty = 17;
+        StorePropertyWithBinop storePropertyWithBinop = 112;
         DeleteProperty deleteProperty = 18;
         LoadElement loadElement = 19;
         StoreElement storeElement = 20;
+        StoreElementWithBinop storeElementWithBinop = 113;
         DeleteElement deleteElement = 21;
         LoadComputedProperty loadComputedProperty = 22;
         StoreComputedProperty storeComputedProperty = 23;
+        StoreComputedPropertyWithBinop storeComputedPropertyWithBinop = 114;
         DeleteComputedProperty deleteComputedProperty = 24;
         TypeOf typeOf = 25;
-        InstanceOf instanceOf = 26;
-        In in = 27;
-        BeginPlainFunctionDefinition beginPlainFunctionDefinition = 28;
-        EndPlainFunctionDefinition endPlainFunctionDefinition = 30;
-        BeginStrictFunctionDefinition beginStrictFunctionDefinition = 65;
-        EndStrictFunctionDefinition endStrictFunctionDefinition = 66;
-        BeginArrowFunctionDefinition beginArrowFunctionDefinition = 67;
-        EndArrowFunctionDefinition endArrowFunctionDefinition = 68;
-        BeginGeneratorFunctionDefinition beginGeneratorFunctionDefinition = 69;
-        EndGeneratorFunctionDefinition endGeneratorFunctionDefinition = 70;
-        BeginAsyncFunctionDefinition beginAsyncFunctionDefinition = 71;
-        EndAsyncFunctionDefinition endAsyncFunctionDefinition = 72;
-        BeginAsyncArrowFunctionDefinition beginAsyncArrowFunctionDefinition= 79;
-        EndAsyncArrowFunctionDefinition endAsyncArrowFunctionDefinition = 80;
-        BeginAsyncGeneratorFunctionDefinition beginAsyncGeneratorFunctionDefinition = 85;
-        EndAsyncGeneratorFunctionDefinition endAsyncGeneratorFunctionDefinition = 86;
+        TestInstanceOf testInstanceOf = 26;
+        TestIn testIn = 27;
+        BeginPlainFunction beginPlainFunction = 28;
+        EndPlainFunction endPlainFunction = 30;
+        BeginArrowFunction beginArrowFunction = 67;
+        EndArrowFunction endArrowFunction = 68;
+        BeginGeneratorFunction beginGeneratorFunction = 69;
+        EndGeneratorFunction endGeneratorFunction = 70;
+        BeginAsyncFunction beginAsyncFunction = 71;
+        EndAsyncFunction endAsyncFunction = 72;
+        BeginAsyncArrowFunction beginAsyncArrowFunction = 79;
+        EndAsyncArrowFunction endAsyncArrowFunction = 80;
+        BeginAsyncGeneratorFunction beginAsyncGeneratorFunction = 85;
+        EndAsyncGeneratorFunction endAsyncGeneratorFunction = 86;
         Return return = 29;
         Yield yield = 73;
         YieldEach yieldEach = 74;
         Await await = 75;
-        CallMethod callMethod = 31;
-        CallComputedMethod callComputedMethod = 96;
         CallFunction callFunction = 32;
+        CallFunctionWithSpread callFunctionWithSpread = 120;
         Construct construct = 33;
-        CallFunctionWithSpread callFunctionWithSpread = 34;
+        ConstructWithSpread constructWithSpread = 121;
+        CallMethod callMethod = 31;
+        CallMethodWithSpread callMethodWithSpread = 122;
+        CallComputedMethod callComputedMethod = 34;
+        CallComputedMethodWithSpread callComputedMethodWithSpread = 123;
         UnaryOperation unaryOperation = 35;
         BinaryOperation binaryOperation = 36;
+        ReassignWithBinop reassignWithBinop = 95;
         Dup dup = 37;
         Reassign reassign = 38;
+        DestructArray destructArray = 116;
+        DestructArrayAndReassign destructArrayAndReassign = 117;
+        DestructObject destructObject = 118;
+        DestructObjectAndReassign destructObjectAndReassign = 119;
         Compare compare = 39;
+        ConditionalOperation conditionalOperation = 96;
         Eval eval = 40;
-        ConditionalOperation conditionalOperation = 98;
-        BeginClassDefinition beginClassDefinition = 87;
-        BeginMethodDefinition beginMethodDefinition = 88;
-        EndClassDefinition endClassDefinition = 89;
+        BeginClass beginClass = 87;
+        BeginMethod beginMethod = 88;
+        EndClass endClass = 89;
         CallSuperConstructor callSuperConstructor = 90;
         CallSuperMethod callSuperMethod = 91;
         LoadSuperProperty loadSuperProperty = 92;
         StoreSuperProperty storeSuperProperty = 93;
+        StoreSuperPropertyWithBinop storeSuperPropertyWithBinop = 115;
+        Explore explore = 124;
         BeginWith beginWith = 41;
         EndWith endWith = 42;
         LoadFromScope loadFromScope = 43;
@@ -95,6 +108,12 @@ message Instruction {
         BeginIf beginIf = 45;
         BeginElse beginElse = 46;
         EndIf endIf = 47;
+        BeginSwitch beginSwitch = 97;
+        BeginSwitchCase beginSwitchCase = 98;
+        BeginSwitchDefaultCase beginSwitchDefaultCase = 126;
+        SwitchBreak switchBreak = 104;
+        EndSwitch endSwitch = 99;
+        EndSwitchCase endSwitchCase = 125;
         BeginWhile beginWhile = 48;
         EndWhile endWhile = 49;
         BeginDoWhile beginDoWhile = 50;
@@ -104,12 +123,13 @@ message Instruction {
         BeginForIn beginForIn = 54;
         EndForIn endForIn = 55;
         BeginForOf beginForOf = 56;
+        BeginForOfWithDestruct beginForOfWithDestruct = 103;
         EndForOf endForOf = 57;
-        Break break = 58;
-        Continue continue = 59;
+        LoopBreak loopBreak = 58;
+        LoopContinue loopContinue = 59;
         BeginTry beginTry = 60;
         BeginCatch beginCatch = 61;
-        BeginFinally beginFinally = 95;
+        BeginFinally beginFinally = 94;
         EndTryCatch endTryCatch = 62;
         ThrowException throwException = 63;
         BeginCodeString beginCodeString = 81;
@@ -120,40 +140,9 @@ message Instruction {
     }
 }
 
-// Keep in sync with TypeCollectionStatus.swift
-enum TypeCollectionStatus {
-    SUCCESS = 0;
-    ERROR = 1;
-    TIMEOUT = 2;
-    NOTATTEMPTED = 3;
-}
-
-// Keep in sync with ProgramTypes.swift
-enum TypeQuality {
-    INFERRED = 0;
-    RUNTIME = 1;
-}
-
-// We store type information simply as list of these
-// TypeInfo messages instead of having separate lists
-// per variable. This is simpler to en- and decode
-// but is a bit less efficient if many variables change
-// their type frequently.
-message TypeInfo {
-    uint32 variable = 1;
-    uint32 index = 2;
-    Type type = 3;
-    TypeQuality quality = 4;
-}
-
-// Encoding for instructions and types must deterministic,
-// i.e. happen in the same order every time. Our operation
-// and type extension caches rely on that.
 message Program {
     bytes uuid = 1;
     repeated Instruction code = 2;
-    repeated TypeInfo types = 3;
-    TypeCollectionStatus typeCollectionStatus = 4;
-    map<sint32, string> comments = 5;
-    Program parent = 6;
+    map<sint32, string> comments = 3;
+    Program parent = 4;
 }

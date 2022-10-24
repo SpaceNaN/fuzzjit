@@ -12,49 +12,73 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Hacky implementation of a weighted list of elements.
-///
-/// An element with weight 2 is 2x more likely to be selected by randomElement() than an element with weight 1. And so on.
+/// A list where each element also has a weight, which determines how frequently it is selected by randomElement().
+/// For example, an element with weight 10 is 2x more likely to be selected by randomElement() than an element with weight 5.
 public struct WeightedList<Element>: Sequence {
-    fileprivate var array = [Element]()
-    fileprivate var elems = [Element]()
-    
+    private var elements = [(elem: Element, weight: Int, cumulativeWeight: Int)]()
+    private var totalWeight = 0
+
+    public init() {}
+
     public init(_ values: [(Element, Int)]) {
         for (e, w) in values {
             append(e, withWeight: w)
         }
     }
-    
-    fileprivate init(_ array: [Element], _ elems: [Element]) {
-        self.array = array
-        self.elems = elems
-    }
-    
-    public mutating func append(_ elem: Element, withWeight weight: Int) {
-        for _ in 0..<weight {
-            array.append(elem)
-        }
-        elems.append(elem)
-    }
-    
-    public func randomElement() -> Element {
-        return chooseUniform(from: array)
-    }
-    
-    public func makeIterator() -> Array<Element>.Iterator {
-        return elems.makeIterator()
-    }
-    
+
     public var count: Int {
-        return elems.count
+        return elements.count
     }
 
-    public mutating func append(_ rhs: WeightedList<Element>) {
-        array += rhs.array
-        elems += rhs.elems
+    public var isEmpty: Bool {
+        return count == 0
     }
-}
 
-public func +<Element>(lhs: WeightedList<Element>, rhs: WeightedList<Element>) -> WeightedList<Element> {
-    return WeightedList<Element>(lhs.array + rhs.array, lhs.elems + rhs.elems)
+    public mutating func append(_ elem: Element, withWeight weight: Int) {
+        assert(weight > 0)
+        elements.append((elem, weight, totalWeight))
+        totalWeight += weight
+    }
+
+    public func filter(_ isIncluded: (Element) -> Bool) -> WeightedList<Element> {
+        var r = WeightedList()
+        for (e, w, _) in elements where isIncluded(e) {
+            r.append(e, withWeight: w)
+        }
+        return r
+    }
+
+    public func randomElement() -> Element {
+        // Binary search: pick a random value between 0 and the sum of all weights, then find the
+        // first element whose cumulative weight is less-than or equal to the selected one.
+        let v = Int.random(in: 0..<totalWeight)
+
+        var low = 0
+        var high = elements.count - 1
+        while low != high {
+            let mid = low + (high - low + 1) / 2
+
+            // Verify the invariants of this binary search implementation.
+            assert(0 <= low && low <= mid && mid <= high && high < elements.count)
+            assert(elements[low].cumulativeWeight <= v)
+            assert(high == elements.count - 1 || elements[high + 1].cumulativeWeight > v)
+
+            if elements[mid].cumulativeWeight > v {
+                high = mid - 1
+            } else {
+                low = mid
+            }
+        }
+
+        // Also verify the results of this binary search implementation.
+        assert(elements[low].cumulativeWeight <= v)
+        assert(low == 0 || elements[low - 1].cumulativeWeight < v)
+        assert(low == elements.count - 1 || elements[low + 1].cumulativeWeight > v)
+
+        return elements[low].elem
+    }
+
+    public func makeIterator() -> Array<Element>.Iterator {
+        return elements.map({ $0.elem }).makeIterator()
+    }
 }

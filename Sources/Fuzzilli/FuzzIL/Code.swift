@@ -16,7 +16,7 @@
 public struct Code: Collection {
     public typealias Element = Instruction
 
-    /// Code is just a linear sequence of instructions
+    /// Code is just a linear sequence of instructions.
     private var instructions = [Instruction]()
 
     /// Creates an empty code instance.
@@ -52,19 +52,20 @@ public struct Code: Collection {
     /// Access the ith instruction in this code.
     public subscript(i: Int) -> Instruction {
         get {
+            assert(instructions[i].hasIndex && instructions[i].index == i)
             return instructions[i]
         }
         set {
             return instructions[i] = Instruction(newValue.op, inouts: newValue.inouts, index: i)
         }
     }
-    
+
     /// Returns the instruction after the given one, if it exists.
     public func after(_ instr: Instruction) -> Instruction? {
         let idx = instr.index + 1
         return idx < endIndex ? self[idx] : nil
     }
-    
+
     /// Returns the instruction before the given one, if it exists.
     public func before(_ instr: Instruction) -> Instruction? {
         let idx = instr.index - 1
@@ -87,8 +88,12 @@ public struct Code: Collection {
     }
 
     /// Appends the given instruction to this code.
-    public mutating func append(_ instr: Instruction) {
-        instructions.append(Instruction(instr.op, inouts: instr.inouts, index: count))
+    /// The inserted instruction will now also contain its index in this code.
+    @discardableResult
+    public mutating func append(_ instr: Instruction) -> Instruction {
+        let instr = Instruction(instr.op, inouts: instr.inouts, index: count)
+        instructions.append(instr)
+        return instr
     }
 
     /// Removes all instructions in this code.
@@ -100,7 +105,7 @@ public struct Code: Collection {
     public mutating func removeLast(_ n: Int = 1) {
         instructions.removeLast(n)
     }
-    
+
     /// Checks whether the given instruction belongs to this code.
     public func contains(_ instr: Instruction) -> Bool {
         let idx = instr.index
@@ -117,54 +122,74 @@ public struct Code: Collection {
         assert(contains(instr))
         self[instr.index] = newInstr
     }
-    
+
+    /// Computes the last variable (which will have the highest number) in this code or nil if there are no variables.
+    public func lastVariable() -> Variable? {
+        assert(isStaticallyValid())
+        for instr in instructions.reversed() {
+            if let v = instr.allOutputs.max() {
+                return v
+            }
+        }
+        return nil
+    }
+
     /// Computes the next free variable in this code.
     public func nextFreeVariable() -> Variable {
         assert(isStaticallyValid())
-        for instr in instructions.reversed() {
-            if let r = instr.allOutputs.max() {
-                return Variable(number: r.number + 1)
-            }
+        if let lastVar = lastVariable() {
+            return Variable(number: lastVar.number + 1)
         }
         return Variable(number: 0)
     }
-    
-    /// Removes nops and renumbers variables so that their numbers are contiguous.
-    public mutating func normalize() {
-        assert(isStaticallyValid())
-        var writeIndex = 0
+
+    /// Renumbers variables so that their numbers are again contiguous.
+    /// This can be useful after instructions have been reordered, for example for the purpose of minimization.
+    public mutating func renumberVariables() {
         var numVariables = 0
         var varMap = VariableMap<Variable>()
-
-        for instr in self {
-            if instr.op is Nop {
-                continue
-            }
-
+        for (idx, instr) in self.enumerated() {
             for output in instr.allOutputs {
-                // Must create a new variable
                 assert(!varMap.contains(output))
                 let mappedVar = Variable(number: numVariables)
                 varMap[output] = mappedVar
                 numVariables += 1
             }
-
             let inouts = instr.inouts.map({ varMap[$0]! })
-
-            self[writeIndex] = Instruction(instr.op, inouts: inouts)
-            writeIndex += 1
+            self[idx] = Instruction(instr.op, inouts: inouts)
         }
-
-        removeLast(count - writeIndex)
     }
-    
+
+    /// Remove all nop instructions from this code.
+    /// Mainly used at the end of code minimization, as code reducers typically just replace deleted instructions with a nop.
+    public mutating func removeNops() {
+        instructions = instructions.filter({ !($0.op is Nop) })
+        // Need to renumber the variables now as nops can have outputs, but also because the instruction indices are no longer correct.
+        renumberVariables()
+    }
+
     /// Checks if this code is statically valid, i.e. can be used as a Program.
     public func check() throws {
         var definedVariables = VariableMap<Int>()
         var scopeCounter = 0
         var visibleScopes = [scopeCounter]
+        var contextAnalyzer = ContextAnalyzer()
         var blockHeads = [Operation]()
+        var defaultSwitchCaseStack: [Bool] = []
         var classDefinitions = ClassDefinitionStack()
+
+        func defineVariable(_ v: Variable, in scope: Int) throws {
+            guard !definedVariables.contains(v) else {
+                throw FuzzilliError.codeVerificationError("variable \(v) was already defined")
+            }
+            if v.number != 0 {
+                let prev = Variable(number: v.number - 1)
+                guard definedVariables.contains(prev) else {
+                    throw FuzzilliError.codeVerificationError("variable definitions are not contiguous: \(v) is defined before \(prev)")
+                }
+            }
+            definedVariables[v] = scope
+        }
 
         for (idx, instr) in instructions.enumerated() {
             guard idx == instr.index else {
@@ -181,6 +206,13 @@ public struct Code: Collection {
                 }
             }
 
+            guard instr.op.requiredContext.isSubset(of: contextAnalyzer.context) else {
+                throw FuzzilliError.codeVerificationError("operation \(instr.op.name) inside an invalid context")
+            }
+
+            // Ensure that the instruction exists in the right context
+            contextAnalyzer.analyze(instr)
+
             // Block and scope management (1)
             if instr.isBlockEnd {
                 guard let blockBegin = blockHeads.popLast() else {
@@ -191,8 +223,13 @@ public struct Code: Collection {
                 }
                 visibleScopes.removeLast()
 
+                // Switch Case semantic verification
+                if instr.op is EndSwitch {
+                    defaultSwitchCaseStack.removeLast()
+                }
+
                 // Class semantic verification
-                if instr.op is EndClassDefinition {
+                if instr.op is EndClass {
                     guard !classDefinitions.current.hasPendingMethods else {
                         let pendingMethods = classDefinitions.current.pendingMethods().map({ $0.name })
                         throw FuzzilliError.codeVerificationError("missing method definitions for methods \(pendingMethods) in class \(classDefinitions.current.name)")
@@ -203,24 +240,38 @@ public struct Code: Collection {
 
             // Ensure output variables don't exist yet
             for output in instr.outputs {
-                guard !definedVariables.contains(output) else {
-                    throw FuzzilliError.codeVerificationError("variable \(output) was already defined")
-                }
-                // Verify that nop outputs are not be used by other instruction
+                // Nop outputs aren't visible and so should not be used by other instruction
                 let scope = instr.op is Nop ? -1 : visibleScopes.last!
-                definedVariables[output] = scope
+                try defineVariable(output, in: scope)
             }
 
             // Block and scope management (2)
-            if instr.isBlockBegin {
+            if instr.isBlockStart {
                 scopeCounter += 1
                 visibleScopes.append(scopeCounter)
                 blockHeads.append(instr.op)
 
+                // Switch Case semantic verification
+                if instr.op is BeginSwitch {
+                    defaultSwitchCaseStack.append(false)
+                }
+
+                // Ensure that we have at most one default case in a switch block
+                if instr.op is BeginSwitchDefaultCase {
+                    let stackTop = defaultSwitchCaseStack.removeLast()
+
+                    // Check if the current block already has a default case
+                    guard !stackTop else {
+                        throw FuzzilliError.codeVerificationError("more than one default switch case defined")
+                    }
+
+                    defaultSwitchCaseStack.append(true)
+                }
+
                 // Class semantic verification
-                if let op = instr.op as? BeginClassDefinition {
+                if let op = instr.op as? BeginClass {
                     classDefinitions.push(ClassDefinition(from: op, name: instr.output.identifier))
-                } else if instr.op is BeginMethodDefinition {
+                } else if instr.op is BeginMethod {
                     guard classDefinitions.current.hasPendingMethods else {
                         throw FuzzilliError.codeVerificationError("too many method definitions for class \(classDefinitions.current.name)")
                     }
@@ -230,17 +281,11 @@ public struct Code: Collection {
 
             // Ensure inner output variables don't exist yet
             for output in instr.innerOutputs {
-                guard !definedVariables.contains(output) else {
-                    throw FuzzilliError.codeVerificationError("variable \(output) was already defined")
-                }
-                definedVariables[output] = visibleScopes.last!
+                try defineVariable(output, in: visibleScopes.last!)
             }
         }
 
-        // Ensure that variable numbers are contiguous
-        guard !definedVariables.hasHoles() else {
-            throw FuzzilliError.codeVerificationError("variable numbers are not contiguous")
-        }
+        assert(!definedVariables.hasHoles())
     }
 
     /// Returns true if this code is valid, false otherwise.
@@ -252,7 +297,7 @@ public struct Code: Collection {
             return false
         }
     }
-    
+
     // This restriction arises from the fact that variables and instruction indices are stored internally as UInt16
     public static let maxNumberOfVariables = 0x10000
 }

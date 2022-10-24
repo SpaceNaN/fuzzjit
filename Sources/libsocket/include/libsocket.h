@@ -12,20 +12,42 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __LIBSOCKET_H__
-#define __LIBSOCKET_H__
+#ifndef LIBSOCKET_H
+#define LIBSOCKET_H
 
 #include <stdint.h>
 #include <sys/types.h>
+#if defined(_WIN32)
+#include <WinSock2.h>
+#endif
 
-int socket_listen(const char* address, uint16_t port);
-int socket_accept(int socket);
-int socket_connect(const char* address, uint16_t port);
+#if defined(_WIN32)
+typedef SOCKET socket_t;
 
-long socket_send(int socket, const uint8_t* data, long length);
-long socket_recv(int socket, uint8_t* buffer, long length);
+// We need C11 or newer due to the use of `_Generic`.  Windows does not have a
+// signed size type, so we construct the equivalent type by inspecting the type
+// of `size_t` and mapping from the signed to the unsigned version.
+#if __STDC_VERSION__-0 >= 201112l
+typedef __typeof__(_Generic((size_t)0,                                  \
+                            unsigned long long int : (long long int)0,  \
+                            unsigned long int : (long int)0,            \
+                            unsigned int : (int)0,                      \
+                            unsigned short : (short)0,                  \
+                            unsigned char : (char)0)) ssize_t;
+#endif
+#else
+typedef int socket_t;
+#define INVALID_SOCKET (-1)
+#endif
 
-int socket_shutdown(int socket);
-int socket_close(int socket);
+socket_t socket_listen(const char* address, uint16_t port);
+socket_t socket_accept(socket_t socket);
+socket_t socket_connect(const char* address, uint16_t port);
+
+ssize_t socket_send(socket_t socket, const uint8_t* data, size_t length);
+ssize_t socket_recv(socket_t socket, uint8_t* buffer, size_t length);
+
+int socket_shutdown(socket_t socket);
+int socket_close(socket_t socket);
 
 #endif

@@ -16,17 +16,13 @@ public class ProgramTemplate {
     /// Name of this ProgramTemplate. Mostly used for statistical purposes.
     public let name: String
 
-    /// Whether this ProgramTemplate expects some prefix code to have been generated already.
-    public let requiresPrefix: Bool
-
     /// Stats for this ProgramTemplate. Mostly to compute correctness rates.
-    public var stats = ProgramGeneratorStats()
+    public var stats = ProgramProducerStats()
 
     private let f: (ProgramBuilder) -> ()
 
-    public init(_ name: String, requiresPrefix: Bool = false, _ f: @escaping (_: ProgramBuilder) -> ()) {
+    public init(_ name: String, _ f: @escaping (_: ProgramBuilder) -> ()) {
         self.name = name
-        self.requiresPrefix = requiresPrefix
         self.f = f
     }
 
@@ -36,8 +32,8 @@ public class ProgramTemplate {
     }
 
     /// Generate an array of random function signatures
-    public static func generateRandomFunctionSignatures(forFuzzer fuzzer: Fuzzer, n: Int) -> [FunctionSignature] {
-        var signatures = [FunctionSignature]()
+    public static func generateRandomFunctionSignatures(forFuzzer fuzzer: Fuzzer, n: Int) -> [Signature] {
+        var signatures = [Signature]()
         for _ in 0..<n {
             signatures.append(ProgramTemplate.generateSignature(forFuzzer: fuzzer, n: Int.random(in: 0...3)))
         }
@@ -64,10 +60,10 @@ public class ProgramTemplate {
 
     /// Generate a random type to use in e.g. function signatures.
     /// This function should only emit types that can be constructed by ProgramBuilder.generateVariable.
-    public static func generateType(forFuzzer fuzzer: Fuzzer, forProperty property: String = "") -> Type {
+    public static func generateType(forFuzzer fuzzer: Fuzzer, forProperty property: String = "") -> JSType {
         return withEqualProbability(
             // Choose a basic type
-            { () -> Type in
+            { () -> JSType in
                 chooseUniform(from: [.integer, .float, .boolean, .bigint, .string])
             },
             // Choose an array
@@ -105,15 +101,15 @@ public class ProgramTemplate {
     }
 
     /// Generate a random function signature.
-    public static func generateSignature(forFuzzer fuzzer: Fuzzer, n: Int) -> FunctionSignature {
-        var params: [Type] = []
+    public static func generateSignature(forFuzzer fuzzer: Fuzzer, n: Int) -> Signature {
+        var params: [Signature.Parameter] = []
         for _ in 0..<n {
-            params.append(generateType(forFuzzer: fuzzer))
+            params.append(.plain(generateType(forFuzzer: fuzzer)))
         }
 
         let returnType = generateType(forFuzzer: fuzzer)
 
-        return FunctionSignature(expects: params, returns: returnType)
+        return Signature(expects: params, returns: returnType)
     }
 }
 

@@ -15,7 +15,9 @@
 import Fuzzilli
 
 let jerryscriptProfile = Profile(
-    processArguments: ["--reprl-fuzzilli"],
+    getProcessArguments: { (randomizingArguments: Bool) -> [String] in
+        return ["--reprl-fuzzilli"]
+    },
 
     // processEnv: [:],
     processEnv: ["UBSAN_OPTIONS":"handle_segv=0"],
@@ -34,7 +36,7 @@ let jerryscriptProfile = Profile(
 
     crashTests: ["fuzzilli('FUZZILLI_CRASH', 0)", "fuzzilli('FUZZILLI_CRASH', 1)"],
 
-    additionalCodeGenerators: WeightedList<CodeGenerator>([]),
+    additionalCodeGenerators: [],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([]),
 
@@ -44,6 +46,6 @@ let jerryscriptProfile = Profile(
         "gc"                : .function([] => .undefined),
         "print"             : .function([] => .undefined),
         "resourceName"      : .function([] => .undefined),
-        "placeholder"       : .function([] => .undefined),        
+        "placeholder"       : .function([] => .undefined),
     ]
 )

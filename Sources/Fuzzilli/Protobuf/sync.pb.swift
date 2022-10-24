@@ -106,6 +106,9 @@ public struct Fuzzilli_Protobuf_Statistics {
   //// The average size of produced programs over the last 1000 programs.
   public var avgProgramSize: Double = 0
 
+  //// The average size of the last 1000 programs added to the corpus. Only computed locally, not across workers.
+  public var avgCorpusProgramSize: Double = 0
+
   //// The current executions per second.
   public var execsPerSecond: Double = 0
 
@@ -118,22 +121,23 @@ public struct Fuzzilli_Protobuf_Statistics {
   //// The percentage of edges covered if doing coverage-guided fuzzing.
   public var coverage: Double = 0
 
-  //// Number of interesting samples with runtime types information
-  public var interestingSamplesWithTypes: UInt64 = 0
+  //// The correctness rate (i.e. number of valid programs divided by number of generated programs) over the last 1000 generated programs.
+  public var correctnessRate: Double = 0
 
-  //// Number of timeouts in runtime type collections runs
-  public var typeCollectionTimeouts: UInt64 = 0
-
-  //// Number of failures in runtime type collections runs
-  public var typeCollectionFailures: UInt64 = 0
-
-  //// Number of runtime type collections runs
-  public var typeCollectionAttempts: UInt64 = 0
+  //// The timeout rate (i.e. number of timeouts divided by number of generated programs) over the last 1000 generated programs.
+  public var timeoutRate: Double = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 }
+
+#if swift(>=5.5) && canImport(_Concurrency)
+extension Fuzzilli_Protobuf_Identification: @unchecked Sendable {}
+extension Fuzzilli_Protobuf_LogMessage: @unchecked Sendable {}
+extension Fuzzilli_Protobuf_FuzzerState: @unchecked Sendable {}
+extension Fuzzilli_Protobuf_Statistics: @unchecked Sendable {}
+#endif  // swift(>=5.5) && canImport(_Concurrency)
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
@@ -269,14 +273,13 @@ extension Fuzzilli_Protobuf_Statistics: SwiftProtobuf.Message, SwiftProtobuf._Me
     5: .same(proto: "crashingSamples"),
     6: .same(proto: "totalExecs"),
     7: .same(proto: "avgProgramSize"),
-    8: .same(proto: "execsPerSecond"),
-    9: .same(proto: "fuzzerOverhead"),
-    10: .same(proto: "numWorkers"),
-    11: .same(proto: "coverage"),
-    12: .same(proto: "interestingSamplesWithTypes"),
-    13: .same(proto: "typeCollectionTimeouts"),
-    14: .same(proto: "typeCollectionFailures"),
-    15: .same(proto: "typeCollectionAttempts"),
+    8: .same(proto: "avgCorpusProgramSize"),
+    9: .same(proto: "execsPerSecond"),
+    10: .same(proto: "fuzzerOverhead"),
+    11: .same(proto: "numWorkers"),
+    12: .same(proto: "coverage"),
+    13: .same(proto: "correctnessRate"),
+    14: .same(proto: "timeoutRate"),
   ]
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -292,14 +295,13 @@ extension Fuzzilli_Protobuf_Statistics: SwiftProtobuf.Message, SwiftProtobuf._Me
       case 5: try { try decoder.decodeSingularUInt64Field(value: &self.crashingSamples) }()
       case 6: try { try decoder.decodeSingularUInt64Field(value: &self.totalExecs) }()
       case 7: try { try decoder.decodeSingularDoubleField(value: &self.avgProgramSize) }()
-      case 8: try { try decoder.decodeSingularDoubleField(value: &self.execsPerSecond) }()
-      case 9: try { try decoder.decodeSingularDoubleField(value: &self.fuzzerOverhead) }()
-      case 10: try { try decoder.decodeSingularUInt64Field(value: &self.numWorkers) }()
-      case 11: try { try decoder.decodeSingularDoubleField(value: &self.coverage) }()
-      case 12: try { try decoder.decodeSingularUInt64Field(value: &self.interestingSamplesWithTypes) }()
-      case 13: try { try decoder.decodeSingularUInt64Field(value: &self.typeCollectionTimeouts) }()
-      case 14: try { try decoder.decodeSingularUInt64Field(value: &self.typeCollectionFailures) }()
-      case 15: try { try decoder.decodeSingularUInt64Field(value: &self.typeCollectionAttempts) }()
+      case 8: try { try decoder.decodeSingularDoubleField(value: &self.avgCorpusProgramSize) }()
+      case 9: try { try decoder.decodeSingularDoubleField(value: &self.execsPerSecond) }()
+      case 10: try { try decoder.decodeSingularDoubleField(value: &self.fuzzerOverhead) }()
+      case 11: try { try decoder.decodeSingularUInt64Field(value: &self.numWorkers) }()
+      case 12: try { try decoder.decodeSingularDoubleField(value: &self.coverage) }()
+      case 13: try { try decoder.decodeSingularDoubleField(value: &self.correctnessRate) }()
+      case 14: try { try decoder.decodeSingularDoubleField(value: &self.timeoutRate) }()
       default: break
       }
     }
@@ -327,29 +329,26 @@ extension Fuzzilli_Protobuf_Statistics: SwiftProtobuf.Message, SwiftProtobuf._Me
     if self.avgProgramSize != 0 {
       try visitor.visitSingularDoubleField(value: self.avgProgramSize, fieldNumber: 7)
     }
+    if self.avgCorpusProgramSize != 0 {
+      try visitor.visitSingularDoubleField(value: self.avgCorpusProgramSize, fieldNumber: 8)
+    }
     if self.execsPerSecond != 0 {
-      try visitor.visitSingularDoubleField(value: self.execsPerSecond, fieldNumber: 8)
+      try visitor.visitSingularDoubleField(value: self.execsPerSecond, fieldNumber: 9)
     }
     if self.fuzzerOverhead != 0 {
-      try visitor.visitSingularDoubleField(value: self.fuzzerOverhead, fieldNumber: 9)
+      try visitor.visitSingularDoubleField(value: self.fuzzerOverhead, fieldNumber: 10)
     }
     if self.numWorkers != 0 {
-      try visitor.visitSingularUInt64Field(value: self.numWorkers, fieldNumber: 10)
+      try visitor.visitSingularUInt64Field(value: self.numWorkers, fieldNumber: 11)
     }
     if self.coverage != 0 {
-      try visitor.visitSingularDoubleField(value: self.coverage, fieldNumber: 11)
+      try visitor.visitSingularDoubleField(value: self.coverage, fieldNumber: 12)
     }
-    if self.interestingSamplesWithTypes != 0 {
-      try visitor.visitSingularUInt64Field(value: self.interestingSamplesWithTypes, fieldNumber: 12)
+    if self.correctnessRate != 0 {
+      try visitor.visitSingularDoubleField(value: self.correctnessRate, fieldNumber: 13)
     }
-    if self.typeCollectionTimeouts != 0 {
-      try visitor.visitSingularUInt64Field(value: self.typeCollectionTimeouts, fieldNumber: 13)
-    }
-    if self.typeCollectionFailures != 0 {
-      try visitor.visitSingularUInt64Field(value: self.typeCollectionFailures, fieldNumber: 14)
-    }
-    if self.typeCollectionAttempts != 0 {
-      try visitor.visitSingularUInt64Field(value: self.typeCollectionAttempts, fieldNumber: 15)
+    if self.timeoutRate != 0 {
+      try visitor.visitSingularDoubleField(value: self.timeoutRate, fieldNumber: 14)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -362,14 +361,13 @@ extension Fuzzilli_Protobuf_Statistics: SwiftProtobuf.Message, SwiftProtobuf._Me
     if lhs.crashingSamples != rhs.crashingSamples {return false}
     if lhs.totalExecs != rhs.totalExecs {return false}
     if lhs.avgProgramSize != rhs.avgProgramSize {return false}
+    if lhs.avgCorpusProgramSize != rhs.avgCorpusProgramSize {return false}
     if lhs.execsPerSecond != rhs.execsPerSecond {return false}
     if lhs.fuzzerOverhead != rhs.fuzzerOverhead {return false}
     if lhs.numWorkers != rhs.numWorkers {return false}
     if lhs.coverage != rhs.coverage {return false}
-    if lhs.interestingSamplesWithTypes != rhs.interestingSamplesWithTypes {return false}
-    if lhs.typeCollectionTimeouts != rhs.typeCollectionTimeouts {return false}
-    if lhs.typeCollectionFailures != rhs.typeCollectionFailures {return false}
-    if lhs.typeCollectionAttempts != rhs.typeCollectionAttempts {return false}
+    if lhs.correctnessRate != rhs.correctnessRate {return false}
+    if lhs.timeoutRate != rhs.timeoutRate {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -26,77 +26,91 @@ Usage:
 \(args.programName) [options] --profile=<profile> /path/to/jsshell
 
 Options:
-    --profile=name              : Select one of several preconfigured profiles.
-                                  Available profiles: \(profiles.keys).
-    --jobs=n                    : Total number of fuzzing jobs. This will start one master thread and n-1 worker threads. Experimental!
-    --engine=name               : The fuzzing engine to use. Available engines: "mutation" (default), "hybrid", "multi".
-                                  Only the mutation engine should be regarded stable at this point.
-    --corpus=name               : The corpus scheduler to use. Available schedulers: "basic" (default), "markov"
-    --deterministicCorpus       : If set, only deterministic samples will be included in the corpus.
-    --minDeterminismExecs=n     : The minimum number of times a new sample will be executed when checking determinism (default: 3)
-    --maxDeterminismExecs=n     : The maximum number of times a new sample will be executed when checking determinism (default: 7)
-    --maxResetCount=n           : The number of times a non-deterministic edge is reset before it is ignored in subsequent executions.
-                                  Only used as part of --deterministicCorpus.
-    --logLevel=level            : The log level to use. Valid values: "verbose", info", "warning", "error", "fatal"
-                                  (default: "info").
-    --numIterations=n           : Run for the specified number of iterations (default: unlimited).
-    --timeout=n                 : Timeout in ms after which to interrupt execution of programs (default: 250).
-    --minMutationsPerSample=n   : Discard samples from the corpus after they have been mutated at least this
-                                  many times (default: 16).
-    --minCorpusSize=n           : Keep at least this many samples in the corpus regardless of the number of times
-                                  they have been mutated (default: 1024).
-    --maxCorpusSize=n           : Only allow the corpus to grow to this many samples. Otherwise the oldest samples
-                                  will be discarded (default: unlimited).
-    --markovDropoutRate=n       : Rate at which low edge samples are not selected, in the Markov Corpus Scheduler,
-                                  per round of sample selection. Used to ensure diversity between fuzzer instances
-                                  (default: 0.10)
-    --consecutiveMutations=n    : Perform this many consecutive mutations on each sample (default: 5).
-    --minimizationLimit=n       : When minimizing corpus samples, keep at least this many instructions in the
-                                  program. See Minimizer.swift for an overview of this feature (default: 0).
-    --storagePath=path          : Path at which to store output files (crashes, corpus, etc.) to.
-    --resume                    : If storage path exists, import the programs from the corpus/ subdirectory
-    --overwrite                 : If storage path exists, delete all data in it and start a fresh fuzzing session
-    --exportStatistics          : If enabled, fuzzing statistics will be collected and saved to disk every 10 minutes.
-                                  Requires --storagePath.
-    --importCorpusAll=path      : Imports a corpus of protobufs to start the initial fuzzing corpus.
-                                  All provided programs are included, even if they do not increase coverage.
-                                  This is useful for searching for variants of existing bugs.
-                                  Can be used alongside wtih importCorpusNewCov, and will run first
-    --importCorpusNewCov=path   : Imports a corpus of protobufs to start the initial fuzzing corpus.
-                                  This only includes programs that increase coverage.
-                                  This is useful for jump starting coverage for a wide range of JavaScript samples.
-                                  Can be used alongside importCorpusAll, and will run second.
-                                  Since all imported samples are asynchronously minimized, the corpus will show a smaller
-                                  than expected size until minimization completes.
-    --importCorpusMerge=path    : Imports a corpus of protobufs to start the initial fuzzing corpus.
-                                  This only keeps programs that increase coverage but does not attempt to minimize
-                                  the samples. This is mostly useful to merge existing corpora from previous fuzzing
-                                  sessions that will have redundant samples but which will already be minimized.
-    --networkMaster=host:port   : Run as master and accept connections from workers over the network. Note: it is
-                                  *highly* recommended to run network fuzzers in an isolated network!
-    --networkWorker=host:port   : Run as worker and connect to the specified master instance.
-    --dontFuzz                  : If used, this instace will not perform fuzzing. Can be useful for master instances.
-    --noAbstractInterpretation  : Disable abstract interpretation of FuzzIL programs during fuzzing. See
-                                  Configuration.swift for more details.
-    --collectRuntimeTypes       : Collect runtime type information for programs that are added to the corpus.
-    --diagnostics               : Enable saving of programs that failed or timed-out during execution. Also tracks
-                                  executions on the current REPRL instance.
-    --inspect=opt1,opt2,...     : Enable inspection options. The following options are available:
-                                      history: Additional .fuzzil.history files are written to disk for every program.
-                                               These describe in detail how the program was generated through mutations,
-                                               code generation, and minimization
-                                        types: Programs written to disk also contain variable type information as
-                                               determined by Fuzzilli as comments
-                                          all: All of the above
+    --profile=name               : Select one of several preconfigured profiles.
+                                   Available profiles: \(profiles.keys).
+    --jobs=n                     : Total number of fuzzing jobs. This will start one master thread and n-1 worker threads.
+    --engine=name                : The fuzzing engine to use. Available engines: "mutation" (default), "hybrid", "multi".
+                                   Only the mutation engine should be regarded stable at this point.
+    --corpus=name                : The corpus scheduler to use. Available schedulers: "basic" (default), "markov"
+    --logLevel=level             : The log level to use. Valid values: "verbose", info", "warning", "error", "fatal" (default: "info").
+    --numIterations=n            : Run for the specified number of iterations (default: unlimited).
+    --timeout=n                  : Timeout in ms after which to interrupt execution of programs (default: 250).
+    --minMutationsPerSample=n    : Discard samples from the corpus only after they have been mutated at least this many times (default: 25).
+    --minCorpusSize=n            : Keep at least this many samples in the corpus regardless of the number of times
+                                   they have been mutated (default: 1000).
+    --maxCorpusSize=n            : Only allow the corpus to grow to this many samples. Otherwise the oldest samples
+                                   will be discarded (default: unlimited).
+    --markovDropoutRate=p        : Rate at which low edge samples are not selected, in the Markov Corpus Scheduler,
+                                   per round of sample selection. Used to ensure diversity between fuzzer instances
+                                   (default: 0.10)
+    --consecutiveMutations=n     : Perform this many consecutive mutations on each sample (default: 5).
+    --minimizationLimit=p        : When minimizing interesting programs, keep at least this percentage of the original instructions
+                                   regardless of whether they are needed to trigger the interesting behaviour or not.
+                                   See Minimizer.swift for an overview of this feature (default: 0.0).
+    --storagePath=path           : Path at which to store output files (crashes, corpus, etc.) to.
+    --resume                     : If storage path exists, import the programs from the corpus/ subdirectory
+    --overwrite                  : If storage path exists, delete all data in it and start a fresh fuzzing session
+    --exportStatistics           : If enabled, fuzzing statistics will be collected and saved to disk in regular intervals.
+                                   Requires --storagePath.
+    --statisticsExportInterval=n : Interval in minutes for saving fuzzing statistics to disk (default: 10).
+                                   Requires --exportStatistics.
+    --importCorpusAll=path       : Imports a corpus of protobufs to start the initial fuzzing corpus.
+                                   All provided programs are included, even if they do not increase coverage.
+                                   This is useful for searching for variants of existing bugs.
+                                   Can be used alongside with importCorpusNewCov, and will run first
+    --importCorpusNewCov=path    : Imports a corpus of protobufs to start the initial fuzzing corpus.
+                                   This only includes programs that increase coverage.
+                                   This is useful for jump starting coverage for a wide range of JavaScript samples.
+                                   Can be used alongside importCorpusAll, and will run second.
+                                   Since all imported samples are asynchronously minimized, the corpus will show a smaller
+                                   than expected size until minimization completes.
+    --importCorpusMerge=path     : Imports a corpus of protobufs to start the initial fuzzing corpus.
+                                   This only keeps programs that increase coverage but does not attempt to minimize
+                                   the samples. This is mostly useful to merge existing corpora from previous fuzzing
+                                   sessions that will have redundant samples but which will already be minimized.
+    --instanceType=type          : Specified the instance type for distributed fuzzing. Possible values:
+                                                     master: Accept connections from workers over the network.
+                                                     worker: Connect to a master instance and synchronize with it.
+                                               intermediate: Run as both network master and worker.
+                                       standalone (default): Don't participate in distributed fuzzing.
+                                   Note: it is *highly* recommended to run distributed fuzzing in an isolated network!
+    --bindTo=host:port           : When running as network master, bind to this address (default: 127.0.0.1:1337).
+    --connectTo=host:port        : When running as network worker, connect to the master instance at this address (default: 127.0.0.1:1337).
+    --corpusSyncMode=mode        : How the corpus is synchronized during distributed fuzzing. Possible values:
+                                                  up: newly discovered corpus samples are only sent to master instances but
+                                                      not to workers. This way, the workers are forced to generate their own
+                                                      corpus, which may lead to more diverse samples overall. However, master
+                                                      instances will still have the full XYZ
+                                                down: newly discovered corpus samples are only sent to worker instances but
+                                                      not to masters. This may make sense when importing a corpus in the master
+                                      full (default): newly discovered corpus samples are sent in both direction. This is the
+                                                      default behaviour and will generally cause all instances in the network
+                                                      to have very roughly the same corpus.
+                                               none : corpus samples are not shared with any other instances in the network.
+                                   Note: thread workers (--jobs=X) always synchronize their corpus.
+    --dontFuzz                   : If used, this instace will not perform fuzzing. Can be useful for master instances.
+    --diagnostics                : Enable saving of programs that failed or timed-out during execution. Also tracks
+                                   executions on the current REPRL instance.
+    --swarmTesting               : Enable Swarm Testing mode. The fuzzer will choose random weights for the code generators per process.
+    --inspect=opt1,opt2,...      : Enable inspection options. The following options are currently available:
+                                       history: Additional .fuzzil.history files are written to disk for every program.
+                                                These describe in detail how the program was generated through mutations,
+                                                code generation, and minimization
+    --argumentRandomization      : Enable JS engine argument randomization
 """)
     exit(0)
+}
+
+// Helper function that prints out an error message, then exits the process.
+func configError(_ msg: String) -> Never {
+    print(msg)
+    exit(-1)
 }
 
 let jsShellPath = args[0]
 
 if !FileManager.default.fileExists(atPath: jsShellPath) {
-    print("Invalid JS shell path \"\(jsShellPath)\", file does not exist")
-    exit(-1)
+    configError("Invalid JS shell path \"\(jsShellPath)\", file does not exist")
 }
 
 var profile: Profile! = nil
@@ -104,150 +118,145 @@ if let val = args["--profile"], let p = profiles[val] {
     profile = p
 }
 if profile == nil {
-    print("Please provide a valid profile with --profile=profile_name. Available profiles: \(profiles.keys)")
-    exit(-1)
+    configError("Please provide a valid profile with --profile=profile_name. Available profiles: \(profiles.keys)")
 }
 
 let numJobs = args.int(for: "--jobs") ?? 1
 let logLevelName = args["--logLevel"] ?? "info"
 let engineName = args["--engine"] ?? "mutation"
 let corpusName = args["--corpus"] ?? "basic"
-var deterministicCorpus = args.has("--deterministicCorpus")
-let minDeterminismExecs = args.int(for: "--minDeterminismExecs") ?? 3
-let maxDeterminismExecs = args.int(for: "--maxDeterminismExecs") ?? 7
-let maxResetCount = args.int(for: "--maxResetCount") ?? 500
 let numIterations = args.int(for: "--numIterations") ?? -1
 let timeout = args.int(for: "--timeout") ?? 250
-let minMutationsPerSample = args.int(for: "--minMutationsPerSample") ?? 16
-let minCorpusSize = args.int(for: "--minCorpusSize") ?? 1024
+let minMutationsPerSample = args.int(for: "--minMutationsPerSample") ?? 25
+let minCorpusSize = args.int(for: "--minCorpusSize") ?? 1000
 let maxCorpusSize = args.int(for: "--maxCorpusSize") ?? Int.max
 let markovDropoutRate = args.double(for: "--markovDropoutRate") ?? 0.10
 let consecutiveMutations = args.int(for: "--consecutiveMutations") ?? 5
-let minimizationLimit = args.uint(for: "--minimizationLimit") ?? 0
+let minimizationLimit = args.double(for: "--minimizationLimit") ?? 0.0
 let storagePath = args["--storagePath"]
-let resume = args.has("--resume")
+var resume = args.has("--resume")
 let overwrite = args.has("--overwrite")
 let exportStatistics = args.has("--exportStatistics")
+let statisticsExportInterval = args.uint(for: "--statisticsExportInterval") ?? 10
 let corpusImportAllPath = args["--importCorpusAll"]
 let corpusImportCovOnlyPath = args["--importCorpusNewCov"]
 let corpusImportMergePath = args["--importCorpusMerge"]
-let disableAbstractInterpreter = args.has("--noAbstractInterpretation")
+let instanceType = args["--instanceType"] ?? "standalone"
+let corpusSyncMode = args["--corpusSyncMode"] ?? "full"
 let dontFuzz = args.has("--dontFuzz")
-let collectRuntimeTypes = args.has("--collectRuntimeTypes")
 let diagnostics = args.has("--diagnostics")
 let inspect = args["--inspect"]
+let swarmTesting = args.has("--swarmTesting")
+let randomizingArguments = args.has("--argumentRandomization")
 
 guard numJobs >= 1 else {
-    print("Must have at least 1 job")
-    exit(-1)
+    configError("Must have at least 1 job")
 }
 
 let logLevelByName: [String: LogLevel] = ["verbose": .verbose, "info": .info, "warning": .warning, "error": .error, "fatal": .fatal]
 guard let logLevel = logLevelByName[logLevelName] else {
-    print("Invalid log level \(logLevelName)")
-    exit(-1)
+    configError("Invalid log level \(logLevelName)")
 }
 
 let validEngines = ["mutation", "hybrid", "multi"]
 guard validEngines.contains(engineName) else {
-    print("--engine must be one of \(validEngines)")
-    exit(-1)
+    configError("--engine must be one of \(validEngines)")
 }
 
 let validCorpora = ["basic", "markov"]
 guard validCorpora.contains(corpusName) else {
-    print("--corpus must be one of \(validCorpora)")
-    exit(-1)
+    configError("--corpus must be one of \(validCorpora)")
 }
 
 if corpusName != "markov" && args.double(for: "--markovDropoutRate") != nil {
-    print("The markovDropoutRate setting is only compatible with the markov corpus")
-    exit(-1)
+    configError("The markovDropoutRate setting is only compatible with the markov corpus")
 }
 
-if corpusName == "markov" && (args.int(for: "--maxCorpusSize") != nil || args.int(for: "--minCorpusSize") != nil 
+if markovDropoutRate < 0 || markovDropoutRate > 1 {
+    print("The markovDropoutRate must be between 0 and 1")
+}
+
+if corpusName == "markov" && (args.int(for: "--maxCorpusSize") != nil || args.int(for: "--minCorpusSize") != nil
     || args.int(for: "--minMutationsPerSample") != nil ) {
-    print("--maxCorpusSize, --minCorpusSize, --minMutationsPerSample are not compatible with the Markov corpus")
-    exit(-1)
+    configError("--maxCorpusSize, --minCorpusSize, --minMutationsPerSample are not compatible with the Markov corpus")
 }
 
-if corpusName == "markov" && !deterministicCorpus {
-    print("Markov corpus requires determinism. Enabling --deterministicCorpus")
-    deterministicCorpus = true
-}
-
-if corpusImportAllPath != nil && deterministicCorpus {
-    print("Deterministic corpus mode is not compatible with --importCorpusAll")
-    exit(-1)
-}
-
-
-if !deterministicCorpus && (args.int(for: "--minDeterminismExecs") != nil || args.int(for: "--maxDeterminismExecs") != nil || args.int(for: "--maxResetCount") != nil) {
-    print("--minDeterminismExecs, --maxDeterminismExecs, --maxResetCount all require --deterministicCorpus")
-    exit(-1)
-}
-
-if minDeterminismExecs <= 0 || maxDeterminismExecs <= 0 || minDeterminismExecs > maxDeterminismExecs {
-    print("minDeterminismExecs and maxDeterminismExecs need to be > 0 and minDeterminismExecs <= maxDeterminismExecs")
-    exit(-1)
-}
-
-if maxResetCount <= maxDeterminismExecs || maxResetCount < 500 {
-    print("maxResetCount should be greater than maxDeterminismExecs and decently high (at least 500)")
-    print(-1)
+if corpusImportAllPath != nil && corpusName == "markov" {
+    // The markov corpus probably won't have edges associated with some samples, which will then never be mutated.
+    configError("Markov corpus is not compatible with --importCorpusAll")
 }
 
 if (resume || overwrite) && storagePath == nil {
-    print("--resume and --overwrite require --storagePath")
-    exit(-1)
+    configError("--resume and --overwrite require --storagePath")
 }
 
 if let path = storagePath {
     let directory = (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
     if !directory.isEmpty && !resume && !overwrite {
-        print("Storage path \(path) exists and is not empty. Please specify either --resume or --overwrite or delete the directory manually")
-        exit(-1)
+        configError("Storage path \(path) exists and is not empty. Please specify either --resume or --overwrite or delete the directory manually")
     }
 }
 
 if resume && overwrite {
-    print("Must only specify one of --resume and --overwrite")
-    exit(-1)
+    configError("Must only specify one of --resume and --overwrite")
 }
 
 if exportStatistics && storagePath == nil {
-    print("--exportStatistics requires --storagePath")
-    exit(-1)
+    configError("--exportStatistics requires --storagePath")
+}
+
+if statisticsExportInterval <= 0 {
+    configError("statisticsExportInterval needs to be > 0")
+}
+
+if args.has("--statisticsExportInterval") && !exportStatistics  {
+    configError("statisticsExportInterval requires --exportStatistics")
 }
 
 if minCorpusSize < 1 {
-    print("--minCorpusSize must be at least 1")
-    exit(-1)
+    configError("--minCorpusSize must be at least 1")
 }
 
 if maxCorpusSize < minCorpusSize {
-    print("--maxCorpusSize must be larger than --minCorpusSize")
-    exit(-1)
+    configError("--maxCorpusSize must be larger than --minCorpusSize")
 }
 
-var networkMasterParams: (String, UInt16)? = nil
-if let val = args["--networkMaster"] {
-    if let params = Arguments.parseHostPort(val) {
-        networkMasterParams = params
-    } else {
-        print("Argument --networkMaster must be of the form \"host:port\"")
-        exit(-1)
-    }
+if minimizationLimit < 0 || minimizationLimit > 1 {
+    configError("--minimizationLimit must be between 0 and 1")
 }
 
-var networkWorkerParams: (String, UInt16)? = nil
-if let val = args["--networkWorker"] {
-    if let params = Arguments.parseHostPort(val) {
-        networkWorkerParams = params
-    } else {
-        print("Argument --networkWorker must be of the form \"host:port\"")
-        exit(-1)
+let validInstanceTypes = ["master", "worker", "intermediate", "standalone"]
+guard validInstanceTypes.contains(instanceType) else {
+    configError("--instanceType must be one of \(validInstanceTypes)")
+}
+var isNetworkMaster = instanceType == "master" || instanceType == "intermediate"
+var isNetworkWorker = instanceType == "worker" || instanceType == "intermediate"
+
+if args.has("--bindTo") && !isNetworkMaster {
+    configError("--bindTo is only valid for master instances")
+}
+if args.has("--connectTo") && !isNetworkWorker {
+    configError("--connectTo is only valid for worker instances")
+}
+
+func parseAddress(_ argName: String) -> (String, UInt16) {
+    var result: (ip: String, port: UInt16) = ("127.0.0.1", 1337)
+    if let address = args[argName] {
+        if let parsedAddress = Arguments.parseHostPort(address) {
+            result = parsedAddress
+        } else {
+            configError("Argument \(argName) must be of the form \"host:port\"")
+        }
     }
+    return result
+}
+
+var addressToBindTo: (ip: String, port: UInt16) = parseAddress("--bindTo")
+var addressToConnectTo: (ip: String, port: UInt16) = parseAddress("--connectTo")
+
+let corpusSyncModeByName: [String: NetworkCorpusSynchronizationMode] = ["up": .up, "down": .down, "full": .full, "none": .none]
+guard let corpusSyncMode = corpusSyncModeByName[corpusSyncMode] else {
+    configError("Invalid network corpus synchronization mode \(corpusSyncMode)")
 }
 
 var inspectionOptions = InspectionOptions()
@@ -257,34 +266,50 @@ if let optionList = inspect {
         switch option {
         case "history":
             inspectionOptions.insert(.history)
-        case "types":
-            inspectionOptions.insert(.types)
-        case "all":
-            inspectionOptions = .all
         default:
-            print("Unknown inspection feature: \(option)")
-            exit(-1)
+            configError("Unknown inspection feature: \(option)")
         }
     }
 }
 
 // Make it easy to detect typos etc. in command line arguments
 if args.unusedOptionals.count > 0 {
-    print("Invalid arguments: \(args.unusedOptionals)")
-    exit(-1)
+    configError("Invalid arguments: \(args.unusedOptionals)")
 }
 
-// Forbid this configuration as runtime types collection requires the AbstractInterpreter
-if disableAbstractInterpreter, collectRuntimeTypes {
-    print(
-        """
-        It is not possible to disable abstract interpretation and enable runtime types collection at the same time.
-        Remove at least one of the arguments:
-        --noAbstractInterpretation
-        --collectRuntimeTypes
-        """
-    )
-    exit(-1)
+// Initialize the logger such that we can print to the screen.
+let logger = Logger(withLabel: "Cli")
+
+///
+/// Chose the code generator weights.
+///
+
+if swarmTesting {
+    logger.info("Choosing the following weights for Swarm Testing mode.")
+    logger.info("Weight | CodeGenerator")
+}
+
+let disabledGenerators = Set(profile.disabledCodeGenerators)
+let additionalCodeGenerators = profile.additionalCodeGenerators
+let regularCodeGenerators: [(CodeGenerator, Int)] = CodeGenerators.map {
+    guard let weight = codeGeneratorWeights[$0.name] else {
+        logger.fatal("Missing weight for code generator \($0.name) in CodeGeneratorWeights.swift")
+    }
+    return ($0, weight)
+}
+var codeGenerators: WeightedList<CodeGenerator> = WeightedList<CodeGenerator>([])
+
+for (generator, var weight) in (additionalCodeGenerators + regularCodeGenerators) {
+    if disabledGenerators.contains(generator.name) {
+        continue
+    }
+
+    if swarmTesting {
+        weight = Int.random(in: 1...30)
+        logger.info(String(format: "%6d | \(generator.name)", weight))
+    }
+
+    codeGenerators.append(generator, withWeight: weight)
 }
 
 //
@@ -293,7 +318,7 @@ if disableAbstractInterpreter, collectRuntimeTypes {
 
 func makeFuzzer(for profile: Profile, with configuration: Configuration) -> Fuzzer {
     // A script runner to execute JavaScript code in an instrumented JS engine.
-    let runner = REPRL(executable: jsShellPath, processArguments: profile.processArguments, processEnvironment: profile.processEnv)
+    let runner = REPRL(executable: jsShellPath, processArguments: profile.getProcessArguments(randomizingArguments), processEnvironment: profile.processEnv)
 
     let engine: FuzzEngine
     switch engineName {
@@ -309,21 +334,6 @@ func makeFuzzer(for profile: Profile, with configuration: Configuration) -> Fuzz
         engine = MultiEngine(engines: engines, initialActive: hybridEngine, iterationsPerEngine: 1000)
     default:
         engine = MutationEngine(numConsecutiveMutations: consecutiveMutations)
-    }
-
-    // Code generators to use.
-    let disabledGenerators = Set(profile.disabledCodeGenerators)
-    var codeGenerators = profile.additionalCodeGenerators
-    for generator in CodeGenerators {
-        if disabledGenerators.contains(generator.name) {
-            continue
-        }
-        guard let weight = codeGeneratorWeights[generator.name] else {
-            print("Missing weight for code generator \(generator.name) in CodeGeneratorWeights.swift")
-            exit(-1)
-        }
-
-        codeGenerators.append(generator, withWeight: weight)
     }
 
     // Program templates to use.
@@ -347,7 +357,7 @@ func makeFuzzer(for profile: Profile, with configuration: Configuration) -> Fuzz
                                   ecmaVersion: profile.ecmaVersion)
 
     // The evaluator to score produced samples.
-    let evaluator = ProgramCoverageEvaluator(runner: runner, maxResetCount: UInt64(maxResetCount))
+    let evaluator = ProgramCoverageEvaluator(runner: runner)
 
     // Corpus managing interesting programs that have been found during fuzzing.
     let corpus: Corpus
@@ -365,11 +375,16 @@ func makeFuzzer(for profile: Profile, with configuration: Configuration) -> Fuzz
 
     /// The mutation fuzzer responsible for mutating programs from the corpus and evaluating the outcome.
     let mutators = WeightedList([
-        (CodeGenMutator(),   3),
-        (InputMutator(),     2),
-        (OperationMutator(), 1),
-        (CombineMutator(),   1),
-        (JITStressMutator(), 0),
+        (ExplorationMutator(),              3),
+        (CodeGenMutator(),                  2),
+        (SpliceMutator(),                   2),
+        (InputMutator(isTypeAware: false),  2),
+        (InputMutator(isTypeAware: true),   1),
+        // Can be enabled for experimental use, ConcatMutator is a limited version of CombineMutator
+        // (ConcatMutator(),                1),
+        (OperationMutator(),                1),
+        (CombineMutator(),                  1),
+        (JITStressMutator(),                1),
     ])
 
     // Construct the fuzzer instance.
@@ -383,9 +398,6 @@ func makeFuzzer(for profile: Profile, with configuration: Configuration) -> Fuzz
                   environment: environment,
                   lifter: lifter,
                   corpus: corpus,
-                  deterministicCorpus: deterministicCorpus,
-                  minDeterminismExecs: minDeterminismExecs,
-                  maxDeterminismExecs: maxDeterminismExecs,
                   minimizer: minimizer)
 }
 
@@ -393,12 +405,8 @@ func makeFuzzer(for profile: Profile, with configuration: Configuration) -> Fuzz
 let config = Configuration(timeout: UInt32(timeout),
                            logLevel: logLevel,
                            crashTests: profile.crashTests,
-                           isMaster: networkMasterParams != nil,
-                           isWorker: networkWorkerParams != nil,
                            isFuzzing: !dontFuzz,
                            minimizationLimit: minimizationLimit,
-                           useAbstractInterpretation: !disableAbstractInterpreter,
-                           collectRuntimeTypes: collectRuntimeTypes,
                            enableDiagnostics: diagnostics,
                            inspection: inspectionOptions)
 
@@ -407,8 +415,6 @@ let fuzzer = makeFuzzer(for: profile, with: config)
 // Create a "UI". We do this now, before fuzzer initialization, so
 // we are able to print log messages generated during initialization.
 let ui = TerminalUI(for: fuzzer)
-
-let logger = Logger(withLabel: "Cli")
 
 // Remaining fuzzer initialization must happen on the fuzzer's dispatch queue.
 fuzzer.sync {
@@ -427,28 +433,29 @@ fuzzer.sync {
                 try FileManager.default.moveItem(atPath: path + "/corpus", toPath: path + "/old_corpus")
             } catch {
                 logger.info("Nothing to resume from: \(path)/corpus does not exist")
+                resume = false
             }
         } else if overwrite {
             logger.info("Deleting all files in \(path) due to --overwrite")
             try? FileManager.default.removeItem(atPath: path)
         } else {
-            // The corpus directory mus be empty. We already checked this above, so just assert here
+            // The corpus directory must be empty. We already checked this above, so just assert here
             let directory = (try? FileManager.default.contentsOfDirectory(atPath: path + "/corpus")) ?? []
             assert(directory.isEmpty)
         }
 
         fuzzer.addModule(Storage(for: fuzzer,
                                  storageDir: path,
-                                 statisticsExportInterval: exportStatistics ? 10 * Minutes : nil
+                                 statisticsExportInterval: exportStatistics ? Double(statisticsExportInterval) * Minutes : nil
         ))
     }
 
     // Synchronize over the network if requested.
-    if let (listenHost, listenPort) = networkMasterParams {
-        fuzzer.addModule(NetworkMaster(for: fuzzer, address: listenHost, port: listenPort))
+    if isNetworkMaster {
+        fuzzer.addModule(NetworkMaster(for: fuzzer, address: addressToBindTo.ip, port: addressToBindTo.port, corpusSynchronizationMode: corpusSyncMode))
     }
-    if let (masterHost, masterPort) = networkWorkerParams {
-        fuzzer.addModule(NetworkWorker(for: fuzzer, hostname: masterHost, port: masterPort))
+    if isNetworkWorker {
+        fuzzer.addModule(NetworkWorker(for: fuzzer, hostname: addressToConnectTo.ip, port: addressToConnectTo.port, corpusSynchronizationMode: corpusSyncMode))
     }
 
     // Synchronize with thread workers if requested.
@@ -457,7 +464,7 @@ fuzzer.sync {
     }
 
     // Check for potential misconfiguration.
-    if !config.isWorker && storagePath == nil {
+    if !isNetworkWorker && storagePath == nil {
         logger.warning("No filesystem storage configured, found crashes will be discarded!")
     }
 
@@ -551,7 +558,7 @@ fuzzer.sync {
         fuzzer.importCorpus(corpus, importMode: .interestingOnly(shouldMinimize: true))
         logger.info("Successfully imported \(path). Samples will be added to the corpus once they are minimized")
     }
-    
+
     // Import and merge an existing corpus if requested
     if let path = corpusImportMergePath {
         let corpus = loadCorpus(from: path)
@@ -577,6 +584,7 @@ for sig in [SIGINT, SIGTERM] {
     signalSources.append(source)
 }
 
+#if !os(Windows)
 // Install signal handler for SIGUSR1 to print the next program that is generated.
 signal(SIGUSR1, SIG_IGN)
 let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: DispatchQueue.main)
@@ -585,6 +593,7 @@ source.setEventHandler {
 }
 source.activate()
 signalSources.append(source)
+#endif
 
 // Finally, start fuzzing.
 for fuzzer in instances {

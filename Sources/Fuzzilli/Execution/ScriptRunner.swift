@@ -13,9 +13,11 @@
 // limitations under the License.
 
 public protocol ScriptRunner: Component {
+    var processArguments: [String] { get }
+
     /// Executes a script, waits for it to complete, and returns the result.
     func run(_ script: String, withTimeout timeout: UInt32) -> Execution
-    
+
     /// Sets an environment variable for the child process. Must only be called before initialization.
     func setEnvironmentVariable(_ key: String, to value: String)
 }

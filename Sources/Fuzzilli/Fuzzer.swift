@@ -37,7 +37,9 @@ public class Fuzzer {
     public let runner: ScriptRunner
 
     /// The fuzzer engine producing new programs from existing ones and executing them.
-    public let engine: FuzzEngine
+    public private(set) var engine: FuzzEngine
+    /// During initial corpus generation, the current engine will be a GenerativeEngine while this will keep a reference to the "real" engine to use after corpus generation.
+    private var nextEngine: FuzzEngine?
 
     /// The active code generators. It is possible to change these (temporarily) at runtime. This is e.g. done by some ProgramTemplates.
     public var codeGenerators: WeightedList<CodeGenerator>
@@ -60,16 +62,20 @@ public class Fuzzer {
     /// The corpus of "interesting" programs found so far.
     public let corpus: Corpus
 
-    // Whether or not only deterministic samples should be included in the corpus
-    private let deterministicCorpus: Bool
-
-    // The minimum and maximum number of times a sample should be executed when
-    // checking for deterministic edges
-    private let minDeterminismExecs: Int
-    private let maxDeterminismExecs: Int
-
-    // The minimizer to shrink programs that cause crashes or trigger new interesting behaviour.
+    /// The minimizer to shrink programs that cause crashes or trigger new interesting behaviour.
     public let minimizer: Minimizer
+
+    public enum Phase {
+        // Importing and minimizing an existing corpus
+        case corpusImport
+        // When starting with an empty corpus, we will do some initial corpus generation using the GenerativeEngine
+        case initialCorpusGeneration
+        // Regular fuzzing using the configured FuzzEngine
+        case fuzzing
+    }
+
+    /// The current phase of the fuzzer
+    public private(set) var phase: Phase = .fuzzing
 
     /// The modules active on this fuzzer.
     var modules = [String: Module]()
@@ -89,20 +95,36 @@ public class Fuzzer {
     /// State management.
     private var maxIterations = -1
     private var iterations = 0
+    private var iterationOfLastInteratingSample = 0
+
+    private var iterationsSinceLastInterestingProgram: Int {
+        assert(iterations >= iterationOfLastInteratingSample)
+        return iterations - iterationOfLastInteratingSample
+    }
 
     /// Fuzzer instances can be looked up from a dispatch queue through this key. See below.
     private static let dispatchQueueKey = DispatchSpecificKey<Fuzzer>()
+
+    /// List of CodeGenerators that don't require inputs and generate simple objects/values that can subsequently be used.
+    public let trivialCodeGenerators: [CodeGenerator] = [
+            CodeGenerators.get("IntegerGenerator"),
+            CodeGenerators.get("StringGenerator"),
+            CodeGenerators.get("BuiltinGenerator"),
+            CodeGenerators.get("RegExpGenerator"),
+            CodeGenerators.get("BigIntGenerator"),
+            CodeGenerators.get("FloatGenerator"),
+            CodeGenerators.get("FloatArrayGenerator"),
+            CodeGenerators.get("IntArrayGenerator"),
+            CodeGenerators.get("TypedArrayGenerator"),
+            CodeGenerators.get("ObjectArrayGenerator"),
+        ]
 
     /// Constructs a new fuzzer instance with the provided components.
     public init(
         configuration: Configuration, scriptRunner: ScriptRunner, engine: FuzzEngine, mutators: WeightedList<Mutator>,
         codeGenerators: WeightedList<CodeGenerator>, programTemplates: WeightedList<ProgramTemplate>, evaluator: ProgramEvaluator,
-        environment: Environment, lifter: Lifter, corpus: Corpus, deterministicCorpus: Bool, minDeterminismExecs: Int,
-        maxDeterminismExecs: Int, minimizer: Minimizer, queue: DispatchQueue? = nil
+        environment: Environment, lifter: Lifter, corpus: Corpus, minimizer: Minimizer, queue: DispatchQueue? = nil
     ) {
-        // Ensure collect runtime types mode is not enabled without abstract interpreter.
-        assert(!configuration.collectRuntimeTypes || configuration.useAbstractInterpretation)
-
         let uniqueId = UUID()
         self.id = uniqueId
         self.queue = queue ?? DispatchQueue(label: "Fuzzer \(uniqueId)", target: DispatchQueue.global())
@@ -118,9 +140,6 @@ public class Fuzzer {
         self.environment = environment
         self.lifter = lifter
         self.corpus = corpus
-        self.deterministicCorpus = deterministicCorpus
-        self.minDeterminismExecs = minDeterminismExecs
-        self.maxDeterminismExecs = maxDeterminismExecs
         self.runner = scriptRunner
         self.minimizer = minimizer
         self.logger = Logger(withLabel: "Fuzzer")
@@ -138,7 +157,7 @@ public class Fuzzer {
     }
 
     /// Schedule work on this fuzzer's dispatch queue.
-    public func async(block: @escaping () -> ()) {
+    public func async(do block: @escaping () -> ()) {
         queue.async {
             guard !self.isStopped else { return }
             block()
@@ -146,7 +165,7 @@ public class Fuzzer {
     }
 
     /// Schedule work on this fuzzer's dispatch queue and wait for its completion.
-    public func sync(block: () -> ()) {
+    public func sync(do block: () -> ()) {
         queue.sync {
             guard !self.isStopped else { return }
             block()
@@ -184,30 +203,28 @@ public class Fuzzer {
             module.initialize(with: self)
         }
 
-        // Install a watchdog to monitor utilization of master instances.
-        if config.isMaster {
-            var lastCheck = Date()
-            timers.scheduleTask(every: 1 * Minutes) {
-                // Monitor responsiveness
-                let now = Date()
-                let interval = now.timeIntervalSince(lastCheck)
-                lastCheck = now
-                // Currently, minimization can take a very long time (up to a few minutes on slow CPUs for
-                // big samples). As such, the fuzzer would quickly be regarded as unresponsive by this metric.
-                // Ideally, it would be possible to split minimization into multiple smaller tasks or otherwise
-                // reduce its impact on the responsiveness of the fuzzer. But for now we just use a very large
-                // tolerance interval here...
-                if interval > 180 {
-                    self.logger.warning("Fuzzing master appears unresponsive (watchdog only triggered after \(Int(interval))s instead of 60s). This is usually fine but will slow down synchronization a bit")
-                }
+        // Install a watchdog to monitor utilization instances.
+        var lastCheck = Date()
+        timers.scheduleTask(every: 1 * Minutes) {
+            // Monitor responsiveness
+            let now = Date()
+            let interval = now.timeIntervalSince(lastCheck)
+            lastCheck = now
+            // Currently, minimization can take a very long time (up to a few minutes on slow CPUs for
+            // big samples). As such, the fuzzer would quickly be regarded as unresponsive by this metric.
+            // Ideally, it would be possible to split minimization into multiple smaller tasks or otherwise
+            // reduce its impact on the responsiveness of the fuzzer. But for now we just use a very large
+            // tolerance interval here...
+            if interval > 180 {
+                self.logger.warning("Fuzzer appears unresponsive (watchdog only triggered after \(Int(interval))s instead of 60s).")
             }
         }
 
-        // Schedule a timer to print mutator statistics
+        // Schedule a timer to print mutator statistics. TODO this should probably all move into the Statistics module, e.g. by adding a |producer| member to the relevant events so the stats can be accumulated.
         if config.logLevel.isAtLeast(.info) {
             timers.scheduleTask(every: 15 * Minutes) {
-                let stats = self.mutators.map({ "\($0.name): \(String(format: "%.2f%%", $0.stats.correctnessRate * 100))" }).joined(separator: ", ")
-                self.logger.info("Mutator correctness rates: \(stats)")
+                let stats = self.mutators.map({ "    \($0.name): Correctness rate: \(String(format: "%.2f%%", $0.stats.correctnessRate * 100)), Failure rate: \(String(format: "%.2f%%", $0.stats.failureRate * 100)), Avg. # of instructions added: \(String(format: "%.2f%", $0.stats.avgNumberOfInstructionsGenerated))" }).joined(separator: "\n")
+                self.logger.info("Mutator statistics:\n\(stats)")
             }
         }
 
@@ -223,16 +240,27 @@ public class Fuzzer {
     public func start(runFor maxIterations: Int) {
         dispatchPrecondition(condition: .onQueue(queue))
         assert(isInitialized)
-        assert(!corpus.isEmpty)
 
         self.maxIterations = maxIterations
+
+        // There could currently be minimization tasks scheduled from a corpus import.
+        // Wait for these to complete before actually starting to fuzz.
+        fuzzGroup.notify(queue: queue) { self.startFuzzing() }
+    }
+
+    private func startFuzzing() {
+        dispatchPrecondition(condition: .onQueue(queue))
+
+        // When starting with an empty corpus, perform initial corpus generation using the GenerativeEngine.
+        if corpus.isEmpty {
+            logger.info("Empty corpus detected. Switching to the GenerativeEngine to perform initial corpus generation")
+            startInitialCorpusGeneration()
+        }
+
         logger.info("Let's go!")
 
         if config.isFuzzing {
-            // Start fuzzing
-            queue.async {
-               self.fuzzOne()
-            }
+            fuzzOne()
         }
     }
 
@@ -288,7 +316,7 @@ public class Fuzzer {
         case .crashed(let termsig):
             // Here we explicitly deal with the possibility that an interesting sample
             // from another instance triggers a crash in this instance.
-            processCrash(program, withSignal: termsig, withStderr: execution.stderr, origin: origin)
+            processCrash(program, withSignal: termsig, withStderr: execution.stderr, withStdout: execution.stdout, origin: origin)
 
         case .succeeded:
             if let aspects = evaluator.evaluate(execution) {
@@ -308,10 +336,10 @@ public class Fuzzer {
 
         let execution = execute(program)
         if case .crashed(let termsig) = execution.outcome {
-            processCrash(program, withSignal: termsig, withStderr: execution.stderr, origin: origin)
+            processCrash(program, withSignal: termsig, withStderr: execution.stderr, withStdout: execution.stdout, origin: origin)
         } else {
             // Non-deterministic crash
-            dispatchEvent(events.CrashFound, data: (program, behaviour: .flaky, signal: 0, isUnique: true, origin: origin))
+            dispatchEvent(events.CrashFound, data: (program, behaviour: .flaky, isUnique: true, origin: origin))
         }
     }
 
@@ -320,7 +348,7 @@ public class Fuzzer {
         /// All valid programs are added to the corpus. This is intended to aid in finding
         /// variants of existing bugs. Programs are not minimized before inclusion.
         case all
-        
+
         /// Only programs that increase coverage are included in the fuzzing corpus.
         /// These samples are intended as a solid starting point for the fuzzer.
         case interestingOnly(shouldMinimize: Bool)
@@ -340,21 +368,30 @@ public class Fuzzer {
             let execution = execute(program)
             guard execution.outcome == .succeeded else { continue }
             let maybeAspects = evaluator.evaluate(execution)
-            
+
             switch importMode {
             case .all:
-                processInteresting(program, havingAspects: ProgramAspects(outcome: .succeeded), origin: .corpusImport(shouldMinimize: false))
+                self.corpus.add(program, maybeAspects ?? ProgramAspects(outcome: .succeeded))
             case .interestingOnly(let shouldMinimize):
                 if let aspects = maybeAspects {
                     processInteresting(program, havingAspects: aspects, origin: .corpusImport(shouldMinimize: shouldMinimize))
                 }
             }
         }
+
         if case .interestingOnly(let shouldMinimize) = importMode, shouldMinimize {
+            // The corpus is being minimized now. Schedule a task to signal when the corpus import has really finished
+            phase = .corpusImport
             fuzzGroup.notify(queue: queue) {
-                self.logger.info("Corpus import completed. Corpus now contains \(self.corpus.size) programs")
+                self.logger.info("Corpus import and minimization completed. Corpus now contains \(self.corpus.size) programs")
+                self.phase = .fuzzing
             }
         }
+    }
+
+    /// All programs currently in the corpus.
+    public func exportCorpus() -> [Program] {
+        return corpus.allPrograms()
     }
 
     /// Exports the internal state of this fuzzer.
@@ -362,23 +399,43 @@ public class Fuzzer {
     /// The state returned by this function can be passed to the importState method to restore
     /// the state. This can be used to synchronize different fuzzer instances and makes it
     /// possible to resume a previous fuzzing run at a later time.
+    /// Note that for this to work, the instances need to be configured identically, i.e. use
+    /// the same components (in particular, corpus) and the same build of the target engine.
     public func exportState() throws -> Data {
         dispatchPrecondition(condition: .onQueue(queue))
 
-        let state = try Fuzzilli_Protobuf_FuzzerState.with {
-            $0.corpus = try corpus.exportState()
-            $0.evaluatorState = evaluator.exportState()
+        if supportsFastStateSynchronization {
+            let state = try Fuzzilli_Protobuf_FuzzerState.with {
+                $0.corpus = try corpus.exportState()
+                $0.evaluatorState = evaluator.exportState()
+            }
+            return try state.serializedData()
+        } else {
+            // Just export all samples in the current corpus
+            return try encodeProtobufCorpus(exportCorpus())
         }
-        return try state.serializedData()
     }
 
     /// Import a previously exported fuzzing state.
     public func importState(from data: Data) throws {
         dispatchPrecondition(condition: .onQueue(queue))
 
-        let state = try Fuzzilli_Protobuf_FuzzerState(serializedData: data)
-        try corpus.importState(state.corpus)
-        try evaluator.importState(state.evaluatorState)
+        if supportsFastStateSynchronization {
+            let state = try Fuzzilli_Protobuf_FuzzerState(serializedData: data)
+            try corpus.importState(state.corpus)
+            try evaluator.importState(state.evaluatorState)
+        } else {
+            let corpus = try decodeProtobufCorpus(data)
+            importCorpus(corpus, importMode: .interestingOnly(shouldMinimize: false))
+        }
+    }
+
+    /// Whether the internal state of this fuzzer instance can be serialized and restored elsewhere, e.g. on a worker instance.
+    private var supportsFastStateSynchronization: Bool {
+        // We might eventually need to check that the other relevant components
+        // (in particular the evaluator) support this as well, but currenty all
+        // of them do.
+        return corpus.supportsFastStateSynchronization
     }
 
     /// Executes a program.
@@ -393,7 +450,7 @@ public class Fuzzer {
         dispatchPrecondition(condition: .onQueue(queue))
         assert(runner.isInitialized)
 
-        let script = lifter.lift(program, withOptions: .minify)
+        let script = lifter.lift(program)
 
         dispatchEvent(events.PreExecute, data: program)
         let execution = runner.run(script, withTimeout: timeout ?? config.timeout)
@@ -402,169 +459,78 @@ public class Fuzzer {
         return execution
     }
 
-    private func inferMissingTypes(in program: Program) {
-        var ai = AbstractInterpreter(for: self.environment)
-        let runtimeTypes = program.types.onlyRuntimeTypes().indexedByInstruction(for: program)
-        var types = ProgramTypes()
-
-        for instr in program.code {
-            let typeChanges = ai.execute(instr)
-
-            for (variable, type) in typeChanges {
-                types.setType(of: variable, to: type, after: instr.index, quality: .inferred)
-            }
-            // Overwrite interpreter types with recently collected runtime types
-            for (variable, type) in runtimeTypes[instr.index] {
-                ai.setType(of: variable, to: type)
-                types.setType(of: variable, to: type, after: instr.index, quality: .runtime)
-            }
-        }
-
-        program.types = types
-    }
-
-    /// Collect and save runtime types of variables in program
-    private func collectRuntimeTypes(for program: Program) {
-        assert(program.typeCollectionStatus == .notAttempted)
-        let script = lifter.lift(program, withOptions: .collectTypes)
-        let execution = runner.run(script, withTimeout: 30 * config.timeout)
-        // JS prints lines alternating between variable name and its type
-        let fuzzout = execution.fuzzout
-        
-        // Split String based on newline deliminator
-#if swift(<5.2)
-        // Swift v3+ compatible split
-        var lines: [String] = []
-        fuzzout.enumerateLines { line, _ in
-                lines.append(line)
-        }
-#elseif swift(>=5.2) 
-        // https://github.com/apple/swift-evolution/blob/master/proposals/0221-character-properties.md
-        let lines = fuzzout.split(whereSeparator: \.isNewline)
-#endif 
-       
-        if execution.outcome == .succeeded {
-            do {
-                var lineNumber = 0
-                while lineNumber < lines.count {
-                    let variable = Variable(number: Int(lines[lineNumber])!), instrCount = Int(lines[lineNumber + 1])!
-                    lineNumber += 2
-                    // Parse (instruction, type) pairs for given variable
-                    for i in stride(from: lineNumber, to: lineNumber + 2 * instrCount, by: 2) {
-                        let proto = try Fuzzilli_Protobuf_Type(jsonUTF8Data: lines[i+1].data(using: .utf8)!)
-                        let runtimeType = try Type(from: proto)
-                        // Runtime types collection is not able to determine all types
-                        // e.g. it cannot determine function signatures
-                        if runtimeType != .unknown {
-                            program.types.setType(of: variable, to: runtimeType, after: Int(lines[i])!, quality: .runtime)
-                        }
-                    }
-                    lineNumber = lineNumber + 2 * instrCount
-                }
-            } catch {
-                logger.warning("Could not deserialize runtime types: \(error)")
-                if config.enableDiagnostics {
-                    logger.warning("Fuzzout:\n\(fuzzout)")
-                }
-            }
-        } else {
-            logger.warning("Execution for type collection did not succeeded, outcome: \(execution.outcome)")
-            if config.enableDiagnostics, case .failed = execution.outcome {
-                logger.warning("Stdout:\n\(execution.stdout)")
-            }
-        }
-        // Save result of runtime types collection to Program
-        program.typeCollectionStatus = TypeCollectionStatus(from: execution.outcome)
-    }
-
-    @discardableResult
-    func updateTypeInformation(for program: Program) -> (didCollectRuntimeTypes: Bool, didInferTypesStatically: Bool) {
-        var didCollectRuntimeTypes = false, didInferTypesStatically = false
-        
-        if config.collectRuntimeTypes && program.typeCollectionStatus == .notAttempted {
-            collectRuntimeTypes(for: program)
-            didCollectRuntimeTypes = true
-        }
-        // Interpretation is needed either if the program does not have any type info (e.g. was minimized)
-        // or if we collected runtime types which can now be improved statically by the interpreter
-        let newTypesNeeded = config.collectRuntimeTypes || !program.hasTypeInformation
-        if config.useAbstractInterpretation && newTypesNeeded {
-            inferMissingTypes(in: program)
-            didInferTypesStatically = true
-        }
-        
-        return (didCollectRuntimeTypes, didInferTypesStatically)
-    }
-
     /// Process a program that has interesting aspects.
     func processInteresting(_ program: Program, havingAspects aspects: ProgramAspects, origin: ProgramOrigin) {
-        var aspectsToTrack = aspects
+        var aspects = aspects
 
-        func processCommon(_ program: Program) {
-            let (newTypeCollectionRun, _) = updateTypeInformation(for: program)
-
-            dispatchEvent(events.InterestingProgramFound, data: (program, origin, newTypeCollectionRun))
-
-            // All interesting programs are added to the corpus for future mutations and splicing
-            corpus.add(program, aspectsToTrack)
-        }
-
-        // If only adding deterministic samples, execute each sample additional times to verify determinism
-        // Each sample will be executed at least minDeterminismExecs, and no more than maxDeterminismExecs times
-        // If two consecutive executions return the same edges after at least minDeterminismExecs times, the sample
-        // is considered deterministic 
-        if deterministicCorpus {
-
-            var didConverge = false
-            var newAspects = aspects
-            var rounds = 1
-
-            repeat {
-                guard let tempAspects = evaluator.evaluateAndIntersect(program, with: newAspects) else { return }
-                // Since evaluateAndIntersect will only ever return aspects that are equivalent to or a subset of
-                // the provided aspects, we can check if they are identical by comparing their sizes
-                didConverge = newAspects.count == tempAspects.count
-                newAspects = tempAspects
-
-                rounds += 1
-            } while rounds < maxDeterminismExecs && (!didConverge || rounds < minDeterminismExecs)
-
-            if rounds == maxDeterminismExecs {
-                logger.error("Sample did not converage at max deterministic execution limit")
+        // Determine which (if any) aspects of the program are triggered deterministially.
+        // For that, the sample is executed at a few more times and the intersection of the interesting aspects of each execution is computed.
+        // Once that intersection is stable, the remaining aspects are considered to be triggered deterministic.
+        let minAttempts = 5
+        let maxAttempts = 50
+        var didConverge = false
+        var attempt = 0
+        repeat {
+            attempt += 1
+            if attempt > maxAttempts {
+                return logger.warning("Sample did not converage after \(maxAttempts) attempts. Discarding it")
             }
 
-            aspectsToTrack = newAspects
+            guard let intersection = evaluator.computeAspectIntersection(of: program, with: aspects) else {
+                // This likely means that no aspects are triggered deterministically, so discard this sample.
+                return
+            }
+
+            // Since evaluateAndIntersect will only ever return aspects that are equivalent to, or a subset of,
+            // the provided aspects, we can check if they are identical by comparing their sizes
+            didConverge = aspects.count == intersection.count
+            aspects = intersection
+        } while !didConverge || attempt < minAttempts
+
+        if origin == .local {
+            iterationOfLastInteratingSample = iterations
+        }
+
+        // Determine whether the program needs to be minimized, then, using this helper function, dispatch the appropriate
+        // event and insert the sample into the corpus.
+        func finishProcessing(_ program: Program) {
+            dispatchEvent(events.InterestingProgramFound, data: (program, origin))
+            corpus.add(program, aspects)
         }
 
         if !origin.requiresMinimization() {
-            return processCommon(program)
-        }
-
-        fuzzGroup.enter()
-        minimizer.withMinimizedCopy(program, withAspects: aspectsToTrack, usingMode: .normal) { minimizedProgram in
-            self.fuzzGroup.leave()
-            // Minimization invalidates any existing runtime type information
-            assert(minimizedProgram.typeCollectionStatus == .notAttempted && !minimizedProgram.hasTypeInformation)
-            processCommon(minimizedProgram)
+            finishProcessing(program)
+        } else {
+            // Minimization should be performed as part of the fuzzing dispatch group. This way, the next fuzzing iteration
+            // will only start once the curent sample has been fully processed and inserted into the corpus.
+            fuzzGroup.enter()
+            minimizer.withMinimizedCopy(program, withAspects: aspects, limit: config.minimizationLimit) { minimizedProgram in
+                self.fuzzGroup.leave()
+                finishProcessing(minimizedProgram)
+            }
         }
     }
 
     /// Process a program that causes a crash.
-    func processCrash(_ program: Program, withSignal termsig: Int, withStderr stderr: String, origin: ProgramOrigin) {
+    func processCrash(_ program: Program, withSignal termsig: Int, withStderr stderr: String, withStdout stdout: String, origin: ProgramOrigin) {
         func processCommon(_ program: Program) {
-            let hasStderrComment = program.comments.at(.footer)?.contains("STDERR") ?? false
-            if !hasStderrComment {
-                // Append a comment containing the content of stderr the first time a crash occurred
+            let hasCrashInfo = program.comments.at(.footer)?.contains("CRASH INFO") ?? false
+            if !hasCrashInfo {
+                program.comments.add("CRASH INFO\n==========\n", at: .footer)
+                program.comments.add("TERMSIG: \(termsig)\n", at: .footer)
                 program.comments.add("STDERR:\n" + stderr, at: .footer)
+                program.comments.add("STDOUT:\n" + stdout, at: .footer)
+                program.comments.add("ARGS: \(runner.processArguments.joined(separator: " "))\n", at: .footer)
             }
+            assert(program.comments.at(.footer)?.contains("CRASH INFO") ?? false)
 
             // Check for uniqueness only after minimization
             let execution = execute(program, withTimeout: self.config.timeout * 2)
             if case .crashed = execution.outcome {
                 let isUnique = evaluator.evaluateCrash(execution) != nil
-                dispatchEvent(events.CrashFound, data: (program, .deterministic, termsig, isUnique, origin))
+                dispatchEvent(events.CrashFound, data: (program, .deterministic, isUnique, origin))
             } else {
-                dispatchEvent(events.CrashFound, data: (program, .flaky, termsig, true, origin))
+                dispatchEvent(events.CrashFound, data: (program, .flaky, true, origin))
             }
         }
 
@@ -573,7 +539,7 @@ public class Fuzzer {
         }
 
         fuzzGroup.enter()
-        minimizer.withMinimizedCopy(program, withAspects: ProgramAspects(outcome: .crashed(termsig)), usingMode: .aggressive) { minimizedProgram in
+        minimizer.withMinimizedCopy(program, withAspects: ProgramAspects(outcome: .crashed(termsig))) { minimizedProgram in
             self.fuzzGroup.leave()
             processCommon(minimizedProgram)
         }
@@ -582,16 +548,17 @@ public class Fuzzer {
     /// Constructs a new ProgramBuilder using this fuzzing context.
     public func makeBuilder(forMutating parent: Program? = nil, mode: ProgramBuilder.Mode = .aggressive) -> ProgramBuilder {
         dispatchPrecondition(condition: .onQueue(queue))
-        let interpreter = config.useAbstractInterpretation ? AbstractInterpreter(for: self.environment) : nil
         // Program ancestor chains are only constructed if inspection mode is enabled
         let parent = config.inspection.contains(.history) ? parent : nil
-        return ProgramBuilder(for: self, parent: parent, interpreter: interpreter, mode: mode)
+        return ProgramBuilder(for: self, parent: parent, mode: mode)
     }
 
     /// Performs one round of fuzzing.
     private func fuzzOne() {
         dispatchPrecondition(condition: .onQueue(queue))
         assert(config.isFuzzing)
+
+        guard !self.isStopped else { return }
 
         guard maxIterations == -1 || iterations < maxIterations else {
             return shutdown(reason: .finished)
@@ -600,26 +567,52 @@ public class Fuzzer {
 
         engine.fuzzOne(fuzzGroup)
 
+        if phase == .initialCorpusGeneration {
+            // Perform initial corpus generation until we haven't found a new interesting sample in the last N
+            // iterations. The rough order of magnitude of N has been determined experimentally: run two instances with
+            // different values (e.g. 10 and 100) for roughly the same number of iterations (approximately until both
+            // have finished the initial corpus generation), then compare the corpus size and coverage.
+            if iterationsSinceLastInterestingProgram > 100 {
+                guard !corpus.isEmpty else {
+                    logger.fatal("Initial corpus generation failed, corpus is still empty. Is the evaluator working correctly?")
+                }
+                logger.info("Initial corpus generation finished. Corpus now contains \(corpus.size) elements")
+                finishInitialCorpusGeneration()
+            }
+        }
+
         // Do the next fuzzing iteration as soon as all tasks related to the current iteration are finished.
         fuzzGroup.notify(queue: queue) {
-            guard !self.isStopped else { return }
             self.fuzzOne()
         }
+    }
+
+    private func startInitialCorpusGeneration() {
+        nextEngine = engine
+        engine = GenerativeEngine(programSize: 10)
+        engine.initialize(with: self)
+        phase = .initialCorpusGeneration
+    }
+
+    private func finishInitialCorpusGeneration() {
+        engine = nextEngine!
+        nextEngine = nil
+        phase = .fuzzing
     }
 
     /// Constructs a non-trivial program. Useful to measure program execution speed.
     private func makeComplexProgram() -> Program {
         let b = makeBuilder()
 
-        let f = b.definePlainFunction(withSignature: FunctionSignature(withParameterCount: 2)) { params in
+        let f = b.buildPlainFunction(with: .parameters(n: 2)) { params in
             let x = b.loadProperty("x", of: params[0])
             let y = b.loadProperty("y", of: params[0])
             let s = b.binary(x, y, with: .Add)
             let p = b.binary(s, params[1], with: .Mul)
-            b.doReturn(value: p)
+            b.doReturn(p)
         }
 
-        b.forLoop(b.loadInt(0), .lessThan, b.loadInt(1000), .Add, b.loadInt(1)) { i in
+        b.buildForLoop(b.loadInt(0), .lessThan, b.loadInt(1000), .Add, b.loadInt(1)) { i in
             let x = b.loadInt(42)
             let y = b.loadInt(43)
             let arg1 = b.createObject(with: ["x": x, "y": y])
@@ -647,92 +640,7 @@ public class Fuzzer {
     /// Runs a number of startup tests to check whether everything is configured correctly.
     public func runStartupTests() {
         assert(isInitialized)
-        let script:String = """
-                            function classOf(object) {
-                               var string = Object.prototype.toString.call(object);
-                               return string.substring(8, string.length - 1);
-                            }
-                            function deepObjectEquals(a, b) {
-                              var aProps = Object.keys(a);
-                              aProps.sort();
-                              var bProps = Object.keys(b);
-                              bProps.sort();
-                              if (!deepEquals(aProps, bProps)) {
-                                return false;
-                              }
-                              for (var i = 0; i < aProps.length; i++) {
-                                if (!deepEquals(a[aProps[i]], b[aProps[i]])) {
-                                  return false;
-                                }
-                              }
-                              return true;
-                            }
-                            function deepEquals(a, b) {
-                              if (a === b) {
-                                if (a === 0) return (1 / a) === (1 / b);
-                                return true;
-                              }
-                              if (typeof a != typeof b) return false;
-                              if (typeof a == 'number') return (isNaN(a) && isNaN(b)) || (a===b);
-                              if (typeof a !== 'object' && typeof a !== 'function' && typeof a !== 'symbol') return false;
-                              var objectClass = classOf(a);
-                              if (objectClass === 'Array') {
-                                if (a.length != b.length) {
-                                  return false;
-                                }
-                                for (var i = 0; i < a.length; i++) {
-                                  if (!deepEquals(a[i], b[i])) return false;
-                                }
-                                return true;
-                              }                
-                              if (objectClass !== classOf(b)) return false;
-                              if (objectClass === 'RegExp') {
-                                return (a.toString() === b.toString());
-                              }
-                              if (objectClass === 'Function') return true;
-                              
-                              if (objectClass == 'String' || objectClass == 'Number' ||
-                                  objectClass == 'Boolean' || objectClass == 'Date') {
-                                if (a.valueOf() !== b.valueOf()) return false;
-                              }
-                              return deepObjectEquals(a, b);
-                            }
-                            function opt(opt_param){
-                            const v0 = 0;
-                            const v2 = Uint32Array;
-                            const v3 = 4.0;
-                            const v5 = [0,0];
-                            if (opt_param) {
-                            }
-                            const v7 = WeakSet;
-                            const v10 = new Int8Array(4294967296);
-                            const v14 = ["65537",Float64Array,-9007199254740993,-9007199254740993];
-                            const v15 = v10[-1];
-                            for (let v19 = 0; v19 < 100; v19++) {
-                            }
-                            //  v15 : 0
-                            return v15;
-                            }
-                            let jit_a0 = opt(false);
-                            opt(true);
-                            let jit_a0_0 = opt(false);
-                            print(jit_a0_0);
-                            %PrepareFunctionForOptimization(opt);
-                            let jit_a1 = opt(true);
-                            %OptimizeFunctionOnNextCall(opt);
-                            let jit_a2 = opt(false);
-                            print(jit_a2);
-                            if (jit_a0 === undefined && jit_a1 === undefined) {
-                                opt(true);
-                            } else {
-                                if (jit_a0_0===jit_a0 && !deepEquals(jit_a0, jit_a2)) {
-                                    fuzzilli('FUZZILLI_CRASH', 0);
-                                }
-                            }
-                            // STDERR:
 
-                            """;
-        print(runner.run(script, withTimeout: 800).outcome)
         // Check if we can execute programs
         var execution = execute(Program())
         guard case .succeeded = execution.outcome else {
@@ -780,25 +688,8 @@ public class Fuzzer {
         let str = b.loadString("Hello World!")
         b.doPrint(str)
         let output = execute(b.finalize()).fuzzout.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !output.hasPrefix("Hello World!") {
+        if output != "Hello World!" {
             logger.warning("Cannot receive FuzzIL output (got \"\(output)\" instead of \"Hello World!\")")
-        }
-
-        // Check if we can collect runtime types if enabled
-        if config.collectRuntimeTypes {
-            b = self.makeBuilder()
-            b.binary(b.loadInt(42), b.loadNull(), with: .Add)
-            let program = b.finalize()
-
-            collectRuntimeTypes(for: program)
-            // First 2 variables are inlined and abstractInterpreter will take care ot these types
-            let expectedTypes = ProgramTypes(
-                from: VariableMap([0: (.integer, .inferred), 1: (.undefined, .inferred), 2: (.integer, .runtime)]),
-                in: program
-            )
-            guard program.types == expectedTypes, program.typeCollectionStatus == .success else {
-                logger.fatal("Cannot collect runtime types (got \"\(program.types)\" instead of \"\(expectedTypes)\")")
-            }
         }
 
         logger.info("Startup tests finished successfully")

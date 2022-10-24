@@ -24,10 +24,6 @@ public class HybridEngine: ComponentBase, FuzzEngine {
     }
 
     override func initialize() {
-        if !fuzzer.config.useAbstractInterpretation {
-            logger.fatal("The HybridEngine requires abstract interpretation to be enabled")
-        }
-
         if fuzzer.config.logLevel.isAtLeast(.info) {
             fuzzer.timers.scheduleTask(every: 15 * Minutes) {
                 let programTemplateStats = self.fuzzer.programTemplates.map({ "\($0.name): \(String(format: "%.2f%%", $0.stats.correctnessRate * 100))" }).joined(separator: ", ")
@@ -40,19 +36,6 @@ public class HybridEngine: ComponentBase, FuzzEngine {
         let b = fuzzer.makeBuilder(mode: .conservative)
 
         b.traceHeader("Generating program based on \(baseTemplate.name) template")
-
-        if baseTemplate.requiresPrefix {
-            let prefix = generateProgramPrefix()
-            b.append(prefix)
-            b.trace("End of prefix")
-
-            // Make sure we have at least a single function that we can use for generateVariable
-            // as it requires this right now.
-            // TODO(cffsmith): make generateVariable call this generator internally
-            // if required or make the generateVariable call able to generate types
-            // of functions
-            b.run(CodeGenerators.get("PlainFunctionGenerator"))
-        }
 
         baseTemplate.generate(in: b)
 
@@ -70,17 +53,17 @@ public class HybridEngine: ComponentBase, FuzzEngine {
             return
         }
 
-       for _ in 0..<numConsecutiveMutations {
-           let mutator = fuzzer.mutators.randomElement()
+        for _ in 0..<numConsecutiveMutations {
+            let mutator = fuzzer.mutators.randomElement()
 
-           if let mutated = mutator.mutate(program, for: fuzzer) {
-               let outcome = execute(mutated, stats: &mutator.stats)
-               if outcome == .succeeded {
-                   program = mutated
-               }
-           } else {
-             logger.warning("Mutator \(mutator.name) failed to mutate generated program")
-           }
-       }
+            if let mutated = mutator.mutate(program, for: fuzzer) {
+                let outcome = execute(mutated, stats: &mutator.stats)
+                if outcome == .succeeded {
+                    program = mutated
+                }
+            } else {
+              logger.warning("Mutator \(mutator.name) failed to mutate generated program")
+            }
+        }
     }
 }

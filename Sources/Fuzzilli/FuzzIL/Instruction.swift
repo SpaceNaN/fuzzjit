@@ -27,7 +27,7 @@ public struct Instruction {
     ///      First numInputs Variables: inputs
     ///      Next numOutputs Variables: outputs visible in the outer scope
     ///      Next numInnerOutputs Variables: outputs only visible in the inner scope created by this instruction
-    ///      Final value, if present, the index of this instruction in the code object it is part of.
+    ///      Final value, if present: the index of this instruction in the code object it belongs to
     private let inouts_: [Variable]
 
 
@@ -65,6 +65,16 @@ public struct Instruction {
     /// The input variables of this instruction.
     public var inputs: ArraySlice<Variable> {
         return inouts_[..<numInputs]
+    }
+
+    /// All variadic inputs of this instruction.
+    public var variadicInputs: ArraySlice<Variable> {
+        return inouts_[firstVariadicInput..<numInputs]
+    }
+
+    /// The index of the first variadic input of this instruction.
+    public var firstVariadicInput: Int {
+        return op.firstVariadicInput
     }
 
     /// Whether this instruction has any outputs.
@@ -112,36 +122,35 @@ public struct Instruction {
         return inouts_[..<numInouts]
     }
 
+    /// Whether this instruction contains its index in the code it belongs to.
+    public var hasIndex: Bool {
+        // If the index is present, it is the last value in inouts. See comment in index getter.
+        return inouts_.count == numInouts + 1
+    }
+
     /// The index of this instruction in the Code it belongs to.
-    /// A value of -1 indicates that this instruction does not belong to any code.
     public var index: Int {
         // We store the index in the internal inouts array for memory efficiency reasons.
         // In practice, this does not limit the size of programs/code since that's already
         // limited by the fact that variables are UInt16 internally.
-        let indexVar = numInouts == inouts_.count ? nil : inouts_.last
-        return Int(indexVar?.number ?? -1)
+        assert(hasIndex)
+        return Int(inouts_.last!.number)
     }
-
 
     ///
     /// Flag accessors.
     ///
 
-    /// A primitive instructions is one that yields a primitive value and has no other side effects.
-    public var isPrimitive: Bool {
-        return op.attributes.contains(.isPrimitive)
+    /// A pure operation returns the same value given the same inputs and has no side effects.
+    public var isPure: Bool {
+        return op.attributes.contains(.isPure)
     }
 
-    /// A literal in the target language.
-    public var isLiteral: Bool {
-        return op.attributes.contains(.isLiteral)
-    }
-
-    /// Is this instruction parametric, i.e. can/should this operation be mutated by the OperationMutator?
-    /// The rough rule of thumbs is that every Operation class that has members other than those already in the Operation class are parametric.
-    /// For example integer values (LoadInteger), string values (LoadProperty and CallMethod), or Arrays (CallFunctionWithSpread).
-    public var isParametric: Bool {
-        return op.attributes.contains(.isParametric)
+    /// True if the operation of this instruction be mutated in a meaningful way.
+    /// An instruction with inputs is always mutable. This only indicates whether the operation can be mutated.
+    /// See Operation.Attributes.isMutable
+    public var isOperationMutable: Bool {
+        return op.attributes.contains(.isMutable)
     }
 
     /// A simple instruction is not a block instruction.
@@ -149,65 +158,70 @@ public struct Instruction {
         return !isBlock
     }
 
-    /// An instruction that performs a procedure call in some way.
+    /// An instruction that performs a procedure call.
+    /// See Operation.Attributes.isCall
     public var isCall: Bool {
         return op.attributes.contains(.isCall)
     }
 
-    /// An instruction whose operation can have a variable number of inputs.
-    public var isVarargs: Bool {
-        return op.attributes.contains(.isVarargs)
+    /// An operation is variadic if it can have a variable number of inputs.
+    /// See Operation.Attributes.isVariadic
+    public var isVariadic: Bool {
+        return op.attributes.contains(.isVariadic)
     }
 
     /// A block instruction is part of a block in the program.
     public var isBlock: Bool {
-        return isBlockBegin || isBlockEnd
+        return isBlockStart || isBlockEnd
     }
 
     /// Whether this instruction is the start of a block.
-    public var isBlockBegin: Bool {
-        return op.attributes.contains(.isBlockBegin)
+    /// See Operation.Attributes.isBlockStart.
+    public var isBlockStart: Bool {
+        return op.attributes.contains(.isBlockStart)
     }
 
     /// Whether this instruction is the end of a block.
+    /// See Operation.Attributes.isBlockEnd.
     public var isBlockEnd: Bool {
         return op.attributes.contains(.isBlockEnd)
     }
 
-    /// Whether this instruction is the start of a block group (so a block begin but not a block end).
-    public var isBlockGroupBegin: Bool {
-        return isBlockBegin && !isBlockEnd
+    /// Whether this instruction is the start of a block group (so a block start but not a block end).
+    public var isBlockGroupStart: Bool {
+        return isBlockStart && !isBlockEnd
     }
 
-    /// Whether this instruction is the end of a block group (so a block end but not a block begin).
+    /// Whether this instruction is the end of a block group (so a block end but not also a block start).
     public var isBlockGroupEnd: Bool {
-        return isBlockEnd && !isBlockBegin
+        return isBlockEnd && !isBlockStart
     }
 
-    /// Whether this instruction is the start of a loop.
-    public var isLoopBegin: Bool {
-        return op.attributes.contains(.isLoopBegin)
-    }
-
-    /// Whether this instruction is the end of a loop.
-    public var isLoopEnd: Bool {
-        return op.attributes.contains(.isLoopEnd)
+    /// Whether the block opened or closed by this instruction is a loop.
+    /// See See Operation.Attributes.isLoop
+    public var isLoop: Bool {
+        return op.attributes.contains(.isLoop)
     }
 
     /// Whether this instruction is a jump.
-    /// An instruction is considered a jump if it unconditionally transfers control flow somewhere else and doesn't "come back" to the following instruction.
+    /// See See Operation.Attributes.isJump.
     public var isJump: Bool {
         return op.attributes.contains(.isJump)
     }
 
-    /// Whether this instruction should not be mutated.
-    public var isImmutable: Bool {
-        return op.attributes.contains(.isImmutable)
+    /// Whether this block start instruction propagates the outer context into the newly started block.
+    /// See Operation.Attributes.propagatesSurroundingContext.
+    public var propagatesSurroundingContext: Bool {
+        assert(isBlockStart)
+        return op.attributes.contains(.propagatesSurroundingContext)
     }
 
-    /// Whether this instruction can be mutated.
-    public var isMutable: Bool {
-        return !isImmutable
+    /// Whether this instruction skips the last context and resumes the
+    /// ContextAnalysis from the second last context stack, this is useful for
+    /// BeginSwitch/EndSwitch Blocks. See BeginSwitchCase.
+    public var skipsSurroundingContext: Bool {
+        assert(isBlockStart)
+        return op.attributes.contains(.resumesSurroundingContext)
     }
 
     /// Whether this instruction is an internal instruction that should not "leak" into
@@ -266,18 +280,25 @@ extension Instruction: ProtobufConvertible {
         func convertEnum<S: Equatable, P: RawRepresentable>(_ s: S, _ allValues: [S]) -> P where P.RawValue == Int {
             return P(rawValue: allValues.firstIndex(of: s)!)!
         }
-        
+
+        func convertParameters(_ parameters: Parameters) -> Fuzzilli_Protobuf_Parameters {
+            return Fuzzilli_Protobuf_Parameters.with {
+                $0.count = UInt32(parameters.count)
+                $0.hasRest_p = parameters.hasRestParameter
+            }
+        }
+
         let result = ProtobufType.with {
             $0.inouts = inouts.map({ UInt32($0.number) })
-            
-            if isParametric {
-                // See if we can use the cache instead.
+
+            if isOperationMutable {
+                // It's probably a somewhat complex operation, so see if we can use the cache instead.
                 if let idx = opCache?.get(op) {
                     $0.opIdx = UInt32(idx)
                     return
                 }
             }
-            
+
             switch op {
             case is Nop:
                 $0.nop = Fuzzilli_Protobuf_Nop()
@@ -295,6 +316,10 @@ extension Instruction: ProtobufConvertible {
                 $0.loadUndefined = Fuzzilli_Protobuf_LoadUndefined()
             case is LoadNull:
                 $0.loadNull = Fuzzilli_Protobuf_LoadNull()
+            case is LoadThis:
+                $0.loadThis = Fuzzilli_Protobuf_LoadThis()
+            case is LoadArguments:
+                $0.loadArguments = Fuzzilli_Protobuf_LoadArguments()
             case let op as LoadRegExp:
                 $0.loadRegExp = Fuzzilli_Protobuf_LoadRegExp.with { $0.value = op.value; $0.flags = op.flags.rawValue }
             case let op as CreateObject:
@@ -305,60 +330,88 @@ extension Instruction: ProtobufConvertible {
                 $0.createArray = Fuzzilli_Protobuf_CreateArray()
             case let op as CreateArrayWithSpread:
                 $0.createArrayWithSpread = Fuzzilli_Protobuf_CreateArrayWithSpread.with { $0.spreads = op.spreads }
+            case let op as CreateTemplateString:
+                $0.createTemplateString = Fuzzilli_Protobuf_CreateTemplateString.with { $0.parts = op.parts }
             case let op as LoadBuiltin:
                 $0.loadBuiltin = Fuzzilli_Protobuf_LoadBuiltin.with { $0.builtinName = op.builtinName }
             case let op as LoadProperty:
                 $0.loadProperty = Fuzzilli_Protobuf_LoadProperty.with { $0.propertyName = op.propertyName }
             case let op as StoreProperty:
                 $0.storeProperty = Fuzzilli_Protobuf_StoreProperty.with { $0.propertyName = op.propertyName }
+            case let op as StorePropertyWithBinop:
+                $0.storePropertyWithBinop = Fuzzilli_Protobuf_StorePropertyWithBinop.with {
+                    $0.propertyName = op.propertyName
+                    $0.op = convertEnum(op.op, allBinaryOperators)
+                }
             case let op as DeleteProperty:
                 $0.deleteProperty = Fuzzilli_Protobuf_DeleteProperty.with { $0.propertyName = op.propertyName }
             case let op as LoadElement:
                 $0.loadElement = Fuzzilli_Protobuf_LoadElement.with { $0.index = op.index }
             case let op as StoreElement:
                 $0.storeElement = Fuzzilli_Protobuf_StoreElement.with { $0.index = op.index }
+            case let op as StoreElementWithBinop:
+                $0.storeElementWithBinop = Fuzzilli_Protobuf_StoreElementWithBinop.with {
+                    $0.index = op.index
+                    $0.op = convertEnum(op.op, allBinaryOperators)
+                }
             case let op as DeleteElement:
                 $0.deleteElement = Fuzzilli_Protobuf_DeleteElement.with { $0.index = op.index }
             case is LoadComputedProperty:
                 $0.loadComputedProperty = Fuzzilli_Protobuf_LoadComputedProperty()
             case is StoreComputedProperty:
                 $0.storeComputedProperty = Fuzzilli_Protobuf_StoreComputedProperty()
+            case let op as StoreComputedPropertyWithBinop:
+                $0.storeComputedPropertyWithBinop = Fuzzilli_Protobuf_StoreComputedPropertyWithBinop.with{ $0.op = convertEnum(op.op, allBinaryOperators) }
             case is DeleteComputedProperty:
                 $0.deleteComputedProperty = Fuzzilli_Protobuf_DeleteComputedProperty()
             case is TypeOf:
                 $0.typeOf = Fuzzilli_Protobuf_TypeOf()
-            case is InstanceOf:
-                $0.instanceOf = Fuzzilli_Protobuf_InstanceOf()
-            case is In:
-                $0.in = Fuzzilli_Protobuf_In()
-            case let op as BeginPlainFunctionDefinition:
-                $0.beginPlainFunctionDefinition = Fuzzilli_Protobuf_BeginPlainFunctionDefinition.with { $0.signature = op.signature.asProtobuf() }
-            case is EndPlainFunctionDefinition:
-                $0.endPlainFunctionDefinition = Fuzzilli_Protobuf_EndPlainFunctionDefinition()
-            case let op as BeginStrictFunctionDefinition:
-                $0.beginStrictFunctionDefinition = Fuzzilli_Protobuf_BeginStrictFunctionDefinition.with { $0.signature = op.signature.asProtobuf() }
-            case is EndStrictFunctionDefinition:
-                $0.endStrictFunctionDefinition = Fuzzilli_Protobuf_EndStrictFunctionDefinition()
-            case let op as BeginArrowFunctionDefinition:
-                $0.beginArrowFunctionDefinition = Fuzzilli_Protobuf_BeginArrowFunctionDefinition.with { $0.signature = op.signature.asProtobuf() }
-            case is EndArrowFunctionDefinition:
-                $0.endArrowFunctionDefinition = Fuzzilli_Protobuf_EndArrowFunctionDefinition()
-            case let op as BeginGeneratorFunctionDefinition:
-                $0.beginGeneratorFunctionDefinition = Fuzzilli_Protobuf_BeginGeneratorFunctionDefinition.with { $0.signature = op.signature.asProtobuf() }
-            case is EndGeneratorFunctionDefinition:
-                $0.endGeneratorFunctionDefinition = Fuzzilli_Protobuf_EndGeneratorFunctionDefinition()
-            case let op as BeginAsyncFunctionDefinition:
-                $0.beginAsyncFunctionDefinition = Fuzzilli_Protobuf_BeginAsyncFunctionDefinition.with { $0.signature = op.signature.asProtobuf() }
-            case is EndAsyncFunctionDefinition:
-                $0.endAsyncFunctionDefinition = Fuzzilli_Protobuf_EndAsyncFunctionDefinition()
-            case let op as BeginAsyncArrowFunctionDefinition:
-                $0.beginAsyncArrowFunctionDefinition = Fuzzilli_Protobuf_BeginAsyncArrowFunctionDefinition.with { $0.signature = op.signature.asProtobuf() }
-            case is EndAsyncArrowFunctionDefinition:
-                $0.endAsyncArrowFunctionDefinition = Fuzzilli_Protobuf_EndAsyncArrowFunctionDefinition()
-            case let op as BeginAsyncGeneratorFunctionDefinition:
-                $0.beginAsyncGeneratorFunctionDefinition = Fuzzilli_Protobuf_BeginAsyncGeneratorFunctionDefinition.with { $0.signature = op.signature.asProtobuf() }
-            case is EndAsyncGeneratorFunctionDefinition:
-                $0.endAsyncGeneratorFunctionDefinition = Fuzzilli_Protobuf_EndAsyncGeneratorFunctionDefinition()
+            case is TestInstanceOf:
+                $0.testInstanceOf = Fuzzilli_Protobuf_TestInstanceOf()
+            case is TestIn:
+                $0.testIn = Fuzzilli_Protobuf_TestIn()
+            case let op as BeginPlainFunction:
+                $0.beginPlainFunction = Fuzzilli_Protobuf_BeginPlainFunction.with {
+                    $0.parameters = convertParameters(op.parameters)
+                    $0.isStrict = op.isStrict
+                }
+            case is EndPlainFunction:
+                $0.endPlainFunction = Fuzzilli_Protobuf_EndPlainFunction()
+            case let op as BeginArrowFunction:
+                $0.beginArrowFunction = Fuzzilli_Protobuf_BeginArrowFunction.with {
+                    $0.parameters = convertParameters(op.parameters)
+                    $0.isStrict = op.isStrict
+                }
+            case is EndArrowFunction:
+                $0.endArrowFunction = Fuzzilli_Protobuf_EndArrowFunction()
+            case let op as BeginGeneratorFunction:
+                $0.beginGeneratorFunction = Fuzzilli_Protobuf_BeginGeneratorFunction.with {
+                    $0.parameters = convertParameters(op.parameters)
+                    $0.isStrict = op.isStrict
+                }
+            case is EndGeneratorFunction:
+                $0.endGeneratorFunction = Fuzzilli_Protobuf_EndGeneratorFunction()
+            case let op as BeginAsyncFunction:
+                $0.beginAsyncFunction = Fuzzilli_Protobuf_BeginAsyncFunction.with {
+                    $0.parameters = convertParameters(op.parameters)
+                    $0.isStrict = op.isStrict
+                }
+            case is EndAsyncFunction:
+                $0.endAsyncFunction = Fuzzilli_Protobuf_EndAsyncFunction()
+            case let op as BeginAsyncArrowFunction:
+                $0.beginAsyncArrowFunction = Fuzzilli_Protobuf_BeginAsyncArrowFunction.with {
+                    $0.parameters = convertParameters(op.parameters)
+                    $0.isStrict = op.isStrict
+                }
+            case is EndAsyncArrowFunction:
+                $0.endAsyncArrowFunction = Fuzzilli_Protobuf_EndAsyncArrowFunction()
+            case let op as BeginAsyncGeneratorFunction:
+                $0.beginAsyncGeneratorFunction = Fuzzilli_Protobuf_BeginAsyncGeneratorFunction.with {
+                    $0.parameters = convertParameters(op.parameters)
+                    $0.isStrict = op.isStrict
+                }
+            case is EndAsyncGeneratorFunction:
+                $0.endAsyncGeneratorFunction = Fuzzilli_Protobuf_EndAsyncGeneratorFunction()
             case is Return:
                 $0.return = Fuzzilli_Protobuf_Return()
             case is Yield:
@@ -367,42 +420,75 @@ extension Instruction: ProtobufConvertible {
                 $0.yieldEach = Fuzzilli_Protobuf_YieldEach()
             case is Await:
                 $0.await = Fuzzilli_Protobuf_Await()
-            case let op as CallMethod:
-                $0.callMethod = Fuzzilli_Protobuf_CallMethod.with { $0.methodName = op.methodName }
-            case is CallComputedMethod:
-                $0.callComputedMethod = Fuzzilli_Protobuf_CallComputedMethod()
             case is CallFunction:
                 $0.callFunction = Fuzzilli_Protobuf_CallFunction()
-            case is Construct:
-                $0.construct = Fuzzilli_Protobuf_Construct()
             case let op as CallFunctionWithSpread:
                 $0.callFunctionWithSpread = Fuzzilli_Protobuf_CallFunctionWithSpread.with { $0.spreads = op.spreads }
+            case is Construct:
+                $0.construct = Fuzzilli_Protobuf_Construct()
+            case let op as ConstructWithSpread:
+                $0.constructWithSpread = Fuzzilli_Protobuf_ConstructWithSpread.with { $0.spreads = op.spreads }
+            case let op as CallMethod:
+                $0.callMethod = Fuzzilli_Protobuf_CallMethod.with {
+                    $0.methodName = op.methodName
+                }
+            case let op as CallMethodWithSpread:
+                $0.callMethodWithSpread = Fuzzilli_Protobuf_CallMethodWithSpread.with {
+                    $0.methodName = op.methodName
+                    $0.spreads = op.spreads
+                }
+            case is CallComputedMethod:
+                $0.callComputedMethod = Fuzzilli_Protobuf_CallComputedMethod()
+            case let op as CallComputedMethodWithSpread:
+                $0.callComputedMethodWithSpread = Fuzzilli_Protobuf_CallComputedMethodWithSpread.with { $0.spreads = op.spreads }
             case let op as UnaryOperation:
                 $0.unaryOperation = Fuzzilli_Protobuf_UnaryOperation.with { $0.op = convertEnum(op.op, allUnaryOperators) }
             case let op as BinaryOperation:
                 $0.binaryOperation = Fuzzilli_Protobuf_BinaryOperation.with { $0.op = convertEnum(op.op, allBinaryOperators) }
+            case let op as ReassignWithBinop:
+                $0.reassignWithBinop = Fuzzilli_Protobuf_ReassignWithBinop.with { $0.op = convertEnum(op.op, allBinaryOperators) }
             case is Dup:
                 $0.dup = Fuzzilli_Protobuf_Dup()
             case is Reassign:
                 $0.reassign = Fuzzilli_Protobuf_Reassign()
+            case let op as DestructArray:
+                $0.destructArray = Fuzzilli_Protobuf_DestructArray.with {
+                    $0.indices = op.indices.map({ Int32($0) })
+                    $0.hasRestElement_p = op.hasRestElement
+                }
+            case let op as DestructArrayAndReassign:
+                $0.destructArrayAndReassign = Fuzzilli_Protobuf_DestructArrayAndReassign.with {
+                    $0.indices = op.indices.map({ Int32($0) })
+                    $0.hasRestElement_p = op.hasRestElement
+                }
+            case let op as DestructObject:
+                $0.destructObject = Fuzzilli_Protobuf_DestructObject.with {
+                    $0.properties = op.properties
+                    $0.hasRestElement_p = op.hasRestElement
+                }
+            case let op as DestructObjectAndReassign:
+                $0.destructObjectAndReassign = Fuzzilli_Protobuf_DestructObjectAndReassign.with {
+                    $0.properties = op.properties
+                    $0.hasRestElement_p = op.hasRestElement
+                }
             case let op as Compare:
                 $0.compare = Fuzzilli_Protobuf_Compare.with { $0.op = convertEnum(op.op, allComparators) }
             case is ConditionalOperation:
                 $0.conditionalOperation = Fuzzilli_Protobuf_ConditionalOperation()
             case let op as Eval:
                 $0.eval = Fuzzilli_Protobuf_Eval.with { $0.code = op.code }
-            case let op as BeginClassDefinition:
-                $0.beginClassDefinition = Fuzzilli_Protobuf_BeginClassDefinition.with {
+            case let op as BeginClass:
+                $0.beginClass = Fuzzilli_Protobuf_BeginClass.with {
                     $0.hasSuperclass_p = op.hasSuperclass
-                    $0.constructorParameters = op.constructorParameters.map({ $0.asProtobuf() })
+                    $0.constructorParameters = convertParameters(op.constructorParameters)
                     $0.instanceProperties = op.instanceProperties
                     $0.instanceMethodNames = op.instanceMethods.map({ $0.name })
-                    $0.instanceMethodSignatures = op.instanceMethods.map({ $0.signature.asProtobuf() })
+                    $0.instanceMethodParameters = op.instanceMethods.map({ convertParameters($0.parameters) })
                 }
-            case let op as BeginMethodDefinition:
-                $0.beginMethodDefinition = Fuzzilli_Protobuf_BeginMethodDefinition.with { $0.numParameters = UInt32(op.numParameters) }
-            case is EndClassDefinition:
-                $0.endClassDefinition = Fuzzilli_Protobuf_EndClassDefinition()
+            case let op as BeginMethod:
+                $0.beginMethod = Fuzzilli_Protobuf_BeginMethod.with { $0.numParameters = UInt32(op.numParameters) }
+            case is EndClass:
+                $0.endClass = Fuzzilli_Protobuf_EndClass()
             case is CallSuperConstructor:
                 $0.callSuperConstructor = Fuzzilli_Protobuf_CallSuperConstructor()
             case let op as CallSuperMethod:
@@ -411,6 +497,13 @@ extension Instruction: ProtobufConvertible {
                 $0.loadSuperProperty = Fuzzilli_Protobuf_LoadSuperProperty.with { $0.propertyName = op.propertyName }
             case let op as StoreSuperProperty:
                 $0.storeSuperProperty = Fuzzilli_Protobuf_StoreSuperProperty.with { $0.propertyName = op.propertyName }
+            case let op as StoreSuperPropertyWithBinop:
+                $0.storeSuperPropertyWithBinop = Fuzzilli_Protobuf_StoreSuperPropertyWithBinop.with {
+                    $0.propertyName = op.propertyName
+                    $0.op = convertEnum(op.op, allBinaryOperators)
+                }
+            case let op as Explore:
+                $0.explore = Fuzzilli_Protobuf_Explore.with { $0.id = op.id }
             case is BeginWith:
                 $0.beginWith = Fuzzilli_Protobuf_BeginWith()
             case is EndWith:
@@ -425,40 +518,57 @@ extension Instruction: ProtobufConvertible {
                 $0.beginElse = Fuzzilli_Protobuf_BeginElse()
             case is EndIf:
                 $0.endIf = Fuzzilli_Protobuf_EndIf()
-            case let op as BeginWhile:
+            case is BeginSwitch:
+                $0.beginSwitch = Fuzzilli_Protobuf_BeginSwitch()
+            case is BeginSwitchCase:
+                $0.beginSwitchCase = Fuzzilli_Protobuf_BeginSwitchCase()
+            case is BeginSwitchDefaultCase:
+                $0.beginSwitchDefaultCase = Fuzzilli_Protobuf_BeginSwitchDefaultCase()
+            case is SwitchBreak:
+                $0.switchBreak = Fuzzilli_Protobuf_SwitchBreak()
+            case let op as EndSwitchCase:
+                $0.endSwitchCase = Fuzzilli_Protobuf_EndSwitchCase.with { $0.fallsThrough = op.fallsThrough }
+            case is EndSwitch:
+                $0.endSwitch = Fuzzilli_Protobuf_EndSwitch()
+            case let op as BeginWhileLoop:
                 $0.beginWhile = Fuzzilli_Protobuf_BeginWhile.with { $0.comparator = convertEnum(op.comparator, allComparators) }
-            case is EndWhile:
+            case is EndWhileLoop:
                 $0.endWhile = Fuzzilli_Protobuf_EndWhile()
-            case let op as BeginDoWhile:
+            case let op as BeginDoWhileLoop:
                 $0.beginDoWhile = Fuzzilli_Protobuf_BeginDoWhile.with { $0.comparator = convertEnum(op.comparator, allComparators) }
-            case is EndDoWhile:
+            case is EndDoWhileLoop:
                 $0.endDoWhile = Fuzzilli_Protobuf_EndDoWhile()
-            case let op as BeginFor:
+            case let op as BeginForLoop:
                 $0.beginFor = Fuzzilli_Protobuf_BeginFor.with {
                     $0.comparator = convertEnum(op.comparator, allComparators)
                     $0.op = convertEnum(op.op, allBinaryOperators)
                 }
-            case is EndFor:
+            case is EndForLoop:
                 $0.endFor = Fuzzilli_Protobuf_EndFor()
-            case is BeginForIn:
+            case is BeginForInLoop:
                 $0.beginForIn = Fuzzilli_Protobuf_BeginForIn()
-            case is EndForIn:
+            case is EndForInLoop:
                 $0.endForIn = Fuzzilli_Protobuf_EndForIn()
-            case is BeginForOf:
+            case is BeginForOfLoop:
                 $0.beginForOf = Fuzzilli_Protobuf_BeginForOf()
-            case is EndForOf:
+            case let op as BeginForOfWithDestructLoop:
+                $0.beginForOfWithDestruct = Fuzzilli_Protobuf_BeginForOfWithDestruct.with {
+                    $0.indices = op.indices.map({ Int32($0) })
+                    $0.hasRestElement_p = op.hasRestElement
+                }
+            case is EndForOfLoop:
                 $0.endForOf = Fuzzilli_Protobuf_EndForOf()
-            case is Break:
-                $0.break = Fuzzilli_Protobuf_Break()
-            case is Continue:
-                $0.continue = Fuzzilli_Protobuf_Continue()
+            case is LoopBreak:
+                $0.loopBreak = Fuzzilli_Protobuf_LoopBreak()
+            case is LoopContinue:
+                $0.loopContinue = Fuzzilli_Protobuf_LoopContinue()
             case is BeginTry:
                 $0.beginTry = Fuzzilli_Protobuf_BeginTry()
             case is BeginCatch:
                 $0.beginCatch = Fuzzilli_Protobuf_BeginCatch()
             case is BeginFinally:
                 $0.beginFinally = Fuzzilli_Protobuf_BeginFinally()
-            case is EndTryCatch:
+            case is EndTryCatchFinally:
                 $0.endTryCatch = Fuzzilli_Protobuf_EndTryCatch()
             case is ThrowException:
                 $0.throwException = Fuzzilli_Protobuf_ThrowException()
@@ -474,11 +584,11 @@ extension Instruction: ProtobufConvertible {
                 fatalError("Unhandled operation type in protobuf conversion: \(op)")
             }
         }
-        
+
         opCache?.add(op)
         return result
     }
-    
+
     func asProtobuf() -> ProtobufType {
         return asProtobuf(with: nil)
     }
@@ -488,7 +598,7 @@ extension Instruction: ProtobufConvertible {
             throw FuzzilliError.instructionDecodingError("invalid variables in instruction")
         }
         let inouts = proto.inouts.map({ Variable(number: Int($0)) })
-        
+
         // Helper function to convert between the Swift and Protobuf enums.
         func convertEnum<S: Equatable, P: RawRepresentable>(_ p: P, _ allValues: [S]) throws -> S where P.RawValue == Int {
             guard allValues.indices.contains(p.rawValue) else {
@@ -496,11 +606,15 @@ extension Instruction: ProtobufConvertible {
             }
             return allValues[p.rawValue]
         }
-    
+
+        func convertParameters(_ parameters: Fuzzilli_Protobuf_Parameters) -> Parameters {
+            return Parameters(count: Int(parameters.count), hasRestParameter: parameters.hasRest_p)
+        }
+
         guard let operation = proto.operation else {
             throw FuzzilliError.instructionDecodingError("missing operation for instruction")
         }
-        
+
         let op: Operation
         switch operation {
         case .opIdx(let idx):
@@ -522,6 +636,10 @@ extension Instruction: ProtobufConvertible {
             op = LoadUndefined()
         case .loadNull(_):
             op = LoadNull()
+        case .loadThis(_):
+            op = LoadThis()
+        case .loadArguments(_):
+            op = LoadArguments()
         case .loadRegExp(let p):
             op = LoadRegExp(value: p.value, flags: RegExpFlags(rawValue: p.flags))
         case .createObject(let p):
@@ -531,61 +649,71 @@ extension Instruction: ProtobufConvertible {
         case .createObjectWithSpread(let p):
             op = CreateObjectWithSpread(propertyNames: p.propertyNames, numSpreads: inouts.count - 1 - p.propertyNames.count)
         case .createArrayWithSpread(let p):
-            op = CreateArrayWithSpread(numInitialValues: inouts.count - 1, spreads: p.spreads)
+            op = CreateArrayWithSpread(spreads: p.spreads)
+        case .createTemplateString(let p):
+            op = CreateTemplateString(parts: p.parts)
         case .loadBuiltin(let p):
             op = LoadBuiltin(builtinName: p.builtinName)
         case .loadProperty(let p):
             op = LoadProperty(propertyName: p.propertyName)
         case .storeProperty(let p):
             op = StoreProperty(propertyName: p.propertyName)
+        case .storePropertyWithBinop(let p):
+            op = StorePropertyWithBinop(propertyName: p.propertyName, operator: try convertEnum(p.op, allBinaryOperators))
         case .deleteProperty(let p):
             op = DeleteProperty(propertyName: p.propertyName)
         case .loadElement(let p):
             op = LoadElement(index: p.index)
         case .storeElement(let p):
             op = StoreElement(index: p.index)
+        case .storeElementWithBinop(let p):
+            op = StoreElementWithBinop(index: p.index, operator: try convertEnum(p.op, allBinaryOperators))
         case .deleteElement(let p):
             op = DeleteElement(index: p.index)
         case .loadComputedProperty(_):
             op = LoadComputedProperty()
         case .storeComputedProperty(_):
             op = StoreComputedProperty()
+        case .storeComputedPropertyWithBinop(let p):
+            op = StoreComputedPropertyWithBinop(operator: try convertEnum(p.op, allBinaryOperators))
         case .deleteComputedProperty(_):
             op = DeleteComputedProperty()
         case .typeOf(_):
             op = TypeOf()
-        case .instanceOf(_):
-            op = InstanceOf()
-        case .in(_):
-            op = In()
-        case .beginPlainFunctionDefinition(let p):
-            op = BeginPlainFunctionDefinition(signature: try FunctionSignature(from: p.signature))
-        case .endPlainFunctionDefinition(_):
-            op = EndPlainFunctionDefinition()
-        case .beginStrictFunctionDefinition(let p):
-            op = BeginStrictFunctionDefinition(signature: try FunctionSignature(from: p.signature))
-        case .endStrictFunctionDefinition(_):
-            op = EndStrictFunctionDefinition()
-        case .beginArrowFunctionDefinition(let p):
-            op = BeginArrowFunctionDefinition(signature: try FunctionSignature(from: p.signature))
-        case .endArrowFunctionDefinition(_):
-            op = EndArrowFunctionDefinition()
-        case .beginGeneratorFunctionDefinition(let p):
-            op = BeginGeneratorFunctionDefinition(signature: try FunctionSignature(from: p.signature))
-        case .endGeneratorFunctionDefinition(_):
-            op = EndGeneratorFunctionDefinition()
-        case .beginAsyncFunctionDefinition(let p):
-            op = BeginAsyncFunctionDefinition(signature: try FunctionSignature(from: p.signature))
-        case .endAsyncFunctionDefinition(_):
-            op = EndAsyncFunctionDefinition()
-        case .beginAsyncArrowFunctionDefinition(let p):
-            op = BeginAsyncArrowFunctionDefinition(signature: try FunctionSignature(from: p.signature))
-        case .endAsyncArrowFunctionDefinition(_):
-            op = EndAsyncArrowFunctionDefinition()
-        case .beginAsyncGeneratorFunctionDefinition(let p):
-            op = BeginAsyncGeneratorFunctionDefinition(signature: try FunctionSignature(from: p.signature))
-        case .endAsyncGeneratorFunctionDefinition(_):
-            op = EndAsyncGeneratorFunctionDefinition()
+        case .testInstanceOf(_):
+            op = TestInstanceOf()
+        case .testIn(_):
+            op = TestIn()
+        case .beginPlainFunction(let p):
+            let parameters = convertParameters(p.parameters)
+            op = BeginPlainFunction(parameters: parameters, isStrict: p.isStrict)
+        case .endPlainFunction(_):
+            op = EndPlainFunction()
+        case .beginArrowFunction(let p):
+            let parameters = convertParameters(p.parameters)
+            op = BeginArrowFunction(parameters: parameters, isStrict: p.isStrict)
+        case .endArrowFunction(_):
+            op = EndArrowFunction()
+        case .beginGeneratorFunction(let p):
+            let parameters = convertParameters(p.parameters)
+            op = BeginGeneratorFunction(parameters: parameters, isStrict: p.isStrict)
+        case .endGeneratorFunction(_):
+            op = EndGeneratorFunction()
+        case .beginAsyncFunction(let p):
+            let parameters = convertParameters(p.parameters)
+            op = BeginAsyncFunction(parameters: parameters, isStrict: p.isStrict)
+        case .endAsyncFunction(_):
+            op = EndAsyncFunction()
+        case .beginAsyncArrowFunction(let p):
+            let parameters = convertParameters(p.parameters)
+            op = BeginAsyncArrowFunction(parameters: parameters, isStrict: p.isStrict)
+        case .endAsyncArrowFunction(_):
+            op = EndAsyncArrowFunction()
+        case .beginAsyncGeneratorFunction(let p):
+            let parameters = convertParameters(p.parameters)
+            op = BeginAsyncGeneratorFunction(parameters: parameters, isStrict: p.isStrict)
+        case .endAsyncGeneratorFunction(_):
+            op = EndAsyncGeneratorFunction()
         case .return(_):
             op = Return()
         case .yield(_):
@@ -594,40 +722,55 @@ extension Instruction: ProtobufConvertible {
             op = YieldEach()
         case .await(_):
             op = Await()
-        case .callMethod(let p):
-            op = CallMethod(methodName: p.methodName, numArguments: inouts.count - 2)
-        case .callComputedMethod(_):
-            // We subtract 3 from the inouts count since the first two elements are the callee and method and the last element is the output variable
-            op = CallComputedMethod(numArguments: inouts.count - 3)
         case .callFunction(_):
             op = CallFunction(numArguments: inouts.count - 2)
-        case .construct(_):
-            op = Construct(numArguments: inouts.count - 2)
         case .callFunctionWithSpread(let p):
             op = CallFunctionWithSpread(numArguments: inouts.count - 2, spreads: p.spreads)
+        case .construct(_):
+            op = Construct(numArguments: inouts.count - 2)
+        case .constructWithSpread(let p):
+            op = ConstructWithSpread(numArguments: inouts.count - 2, spreads: p.spreads)
+        case .callMethod(let p):
+            op = CallMethod(methodName: p.methodName, numArguments: inouts.count - 2)
+        case .callMethodWithSpread(let p):
+            op = CallMethodWithSpread(methodName: p.methodName, numArguments: inouts.count - 2, spreads: p.spreads)
+        case .callComputedMethod(_):
+            op = CallComputedMethod(numArguments: inouts.count - 3)
+        case .callComputedMethodWithSpread(let p):
+            op = CallComputedMethodWithSpread(numArguments: inouts.count - 3, spreads: p.spreads)
         case .unaryOperation(let p):
             op = UnaryOperation(try convertEnum(p.op, allUnaryOperators))
         case .binaryOperation(let p):
             op = BinaryOperation(try convertEnum(p.op, allBinaryOperators))
+        case .reassignWithBinop(let p):
+            op = ReassignWithBinop(try convertEnum(p.op, allBinaryOperators))
         case .dup(_):
             op = Dup()
         case .reassign(_):
             op = Reassign()
+        case .destructArray(let p):
+            op = DestructArray(indices: p.indices.map({ Int($0) }), hasRestElement: p.hasRestElement_p)
+        case .destructArrayAndReassign(let p):
+            op = DestructArrayAndReassign(indices: p.indices.map({ Int($0) }), hasRestElement: p.hasRestElement_p)
+        case .destructObject(let p):
+            op = DestructObject(properties: p.properties, hasRestElement: p.hasRestElement_p)
+        case .destructObjectAndReassign(let p):
+            op = DestructObjectAndReassign(properties: p.properties, hasRestElement: p.hasRestElement_p)
         case .compare(let p):
             op = Compare(try convertEnum(p.op, allComparators))
-        case .eval(let p):
-            op = Eval(p.code, numArguments: inouts.count)
         case .conditionalOperation(_):
             op = ConditionalOperation()
-        case .beginClassDefinition(let p):
-            op = BeginClassDefinition(hasSuperclass: p.hasSuperclass_p,
-                                      constructorParameters: try p.constructorParameters.map({ try Type(from: $0) }),
-                                      instanceProperties: p.instanceProperties,
-                                      instanceMethods: Array(zip(p.instanceMethodNames, try p.instanceMethodSignatures.map({ try FunctionSignature(from: $0) }))))
-        case .beginMethodDefinition(let p):
-            op = BeginMethodDefinition(numParameters: Int(p.numParameters))
-        case .endClassDefinition(_):
-            op = EndClassDefinition()
+        case .eval(let p):
+            op = Eval(p.code, numArguments: inouts.count)
+        case .beginClass(let p):
+            op = BeginClass(hasSuperclass: p.hasSuperclass_p,
+                            constructorParameters: convertParameters(p.constructorParameters),
+                            instanceProperties: p.instanceProperties,
+                            instanceMethods: Array(zip(p.instanceMethodNames, p.instanceMethodParameters.map(convertParameters))))
+        case .beginMethod(let p):
+            op = BeginMethod(numParameters: Int(p.numParameters))
+        case .endClass(_):
+            op = EndClass()
         case .callSuperConstructor(_):
             op = CallSuperConstructor(numArguments: inouts.count)
         case .callSuperMethod(let p):
@@ -636,6 +779,10 @@ extension Instruction: ProtobufConvertible {
             op = LoadSuperProperty(propertyName: p.propertyName)
         case .storeSuperProperty(let p):
             op = StoreSuperProperty(propertyName: p.propertyName)
+        case .storeSuperPropertyWithBinop(let p):
+            op = StoreSuperPropertyWithBinop(propertyName: p.propertyName, operator: try convertEnum(p.op, allBinaryOperators))
+        case .explore(let p):
+            op = Explore(id: p.id, numArguments: inouts.count - 1)
         case .beginWith(_):
             op = BeginWith()
         case .endWith(_):
@@ -650,30 +797,44 @@ extension Instruction: ProtobufConvertible {
             op = BeginElse()
         case .endIf(_):
             op = EndIf()
+        case .beginSwitch(_):
+            op = BeginSwitch()
+        case .beginSwitchCase(_):
+            op = BeginSwitchCase()
+        case .beginSwitchDefaultCase(_):
+            op = BeginSwitchDefaultCase()
+        case .switchBreak(_):
+            op = SwitchBreak()
+        case .endSwitchCase(let p):
+            op = EndSwitchCase(fallsThrough: p.fallsThrough)
+        case .endSwitch(_):
+            op = EndSwitch()
         case .beginWhile(let p):
-            op = BeginWhile(comparator: try convertEnum(p.comparator, allComparators))
+            op = BeginWhileLoop(comparator: try convertEnum(p.comparator, allComparators))
         case .endWhile(_):
-            op = EndWhile()
+            op = EndWhileLoop()
         case .beginDoWhile(let p):
-            op = BeginDoWhile(comparator: try convertEnum(p.comparator, allComparators))
+            op = BeginDoWhileLoop(comparator: try convertEnum(p.comparator, allComparators))
         case .endDoWhile(_):
-            op = EndDoWhile()
+            op = EndDoWhileLoop()
         case .beginFor(let p):
-            op = BeginFor(comparator: try convertEnum(p.comparator, allComparators), op: try convertEnum(p.op, allBinaryOperators))
+            op = BeginForLoop(comparator: try convertEnum(p.comparator, allComparators), op: try convertEnum(p.op, allBinaryOperators))
         case .endFor(_):
-            op = EndFor()
+            op = EndForLoop()
         case .beginForIn(_):
-            op = BeginForIn()
+            op = BeginForInLoop()
         case .endForIn(_):
-            op = EndForIn()
+            op = EndForInLoop()
         case .beginForOf(_):
-            op = BeginForOf()
+            op = BeginForOfLoop()
+        case .beginForOfWithDestruct(let p):
+            op = BeginForOfWithDestructLoop(indices: p.indices.map({ Int($0) }), hasRestElement: p.hasRestElement_p)
         case .endForOf(_):
-            op = EndForOf()
-        case .break(_):
-            op = Break()
-        case .continue(_):
-            op = Continue()
+            op = EndForOfLoop()
+        case .loopBreak(_):
+            op = LoopBreak()
+        case .loopContinue(_):
+            op = LoopContinue()
         case .beginTry(_):
             op = BeginTry()
         case .beginCatch(_):
@@ -681,7 +842,7 @@ extension Instruction: ProtobufConvertible {
         case .beginFinally(_):
             op = BeginFinally()
         case .endTryCatch(_):
-            op = EndTryCatch()
+            op = EndTryCatchFinally()
         case .throwException(_):
             op = ThrowException()
         case .beginCodeString(_):
@@ -695,16 +856,16 @@ extension Instruction: ProtobufConvertible {
         case .nop(_):
             op = Nop()
         }
-        
+
         guard op.numInputs + op.numOutputs + op.numInnerOutputs == inouts.count else {
             throw FuzzilliError.instructionDecodingError("incorrect number of in- and outputs")
         }
-        
+
         opCache?.add(op)
-        
+
         self.init(op, inouts: inouts)
     }
-    
+
     init(from proto: ProtobufType) throws {
         try self.init(from: proto, with: nil)
     }

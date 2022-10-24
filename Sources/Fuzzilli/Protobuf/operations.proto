@@ -15,8 +15,6 @@
 syntax = "proto3";
 package fuzzilli.protobuf;
 
-import "typesystem.proto";
-
 message LoadInteger {
     int64 value = 1;
 }
@@ -43,6 +41,12 @@ message LoadUndefined {
 message LoadNull {
 }
 
+message LoadThis {
+}
+
+message LoadArguments {
+}
+
 message LoadRegExp {
     string value = 1;
     uint32 flags = 2;
@@ -53,6 +57,10 @@ message CreateObject {
 }
 
 message CreateArray {
+}
+
+message CreateTemplateString {
+    repeated string parts = 1;
 }
 
 message CreateObjectWithSpread {
@@ -75,6 +83,11 @@ message StoreProperty {
     string propertyName = 1;
 }
 
+message StorePropertyWithBinop {
+    string propertyName = 1;
+    BinaryOperator op = 2;
+}
+
 message DeleteProperty {
     string propertyName = 1;
 }
@@ -87,6 +100,11 @@ message StoreElement {
     int64 index = 1;
 }
 
+message StoreElementWithBinop {
+    int64 index = 1;
+    BinaryOperator op = 2;
+}
+
 message DeleteElement {
     int64 index = 1;
 }
@@ -97,65 +115,73 @@ message LoadComputedProperty {
 message StoreComputedProperty {
 }
 
+message StoreComputedPropertyWithBinop {
+    BinaryOperator op = 1;
+}
+
 message DeleteComputedProperty {
 }
 
 message TypeOf {
 }
 
-message InstanceOf {
+message TestInstanceOf {
 }
 
-message In {
+message TestIn {
 }
 
-message BeginPlainFunctionDefinition {
-    FunctionSignature signature = 1;
+message Parameters {
+  uint32 count = 1;
+  bool hasRest = 2;
 }
 
-message EndPlainFunctionDefinition {
+message BeginPlainFunction {
+    Parameters parameters = 1;
+    bool isStrict = 2;
 }
 
-message BeginStrictFunctionDefinition {
-    FunctionSignature signature = 1;
+message EndPlainFunction {
 }
 
-message EndStrictFunctionDefinition {
+message BeginArrowFunction {
+    Parameters parameters = 1;
+    bool isStrict = 2;
 }
 
-message BeginArrowFunctionDefinition {
-    FunctionSignature signature = 1;
+message EndArrowFunction {
 }
 
-message EndArrowFunctionDefinition {
+message BeginGeneratorFunction {
+    Parameters parameters = 1;
+    bool isStrict = 2;
 }
 
-message BeginGeneratorFunctionDefinition {
-    FunctionSignature signature = 1;
+message EndGeneratorFunction {
 }
 
-message EndGeneratorFunctionDefinition {
+message BeginAsyncFunction {
+    Parameters parameters = 1;
+    bool isStrict = 2;
 }
 
-message BeginAsyncFunctionDefinition {
-    FunctionSignature signature = 1;
+message EndAsyncFunction {
 }
 
-message EndAsyncFunctionDefinition {
+message BeginAsyncArrowFunction {
+    Parameters parameters = 1;
+    bool isStrict = 2;
 }
 
-message BeginAsyncArrowFunctionDefinition {
-    FunctionSignature signature = 1;
+message EndAsyncArrowFunction {
 }
 
-message EndAsyncArrowFunctionDefinition {
+message BeginAsyncGeneratorFunction {
+    Parameters parameters = 1;
+    bool isStrict = 2;
 }
 
-message BeginAsyncGeneratorFunctionDefinition {
-    FunctionSignature signature = 1;
-}
-
-message EndAsyncGeneratorFunctionDefinition {
+message EndAsyncGeneratorFunction {
 }
 
 message Return {
@@ -170,20 +196,33 @@ message YieldEach {
 message Await {
 }
 
-message CallMethod {
-    string methodName = 1;
-}
-
-message CallComputedMethod {
-}
-
 message CallFunction {
+}
+
+message CallFunctionWithSpread {
+    repeated bool spreads = 1;
 }
 
 message Construct {
 }
 
-message CallFunctionWithSpread {
+message ConstructWithSpread {
+    repeated bool spreads = 1;
+}
+
+message CallMethod {
+    string methodName = 1;
+}
+
+message CallMethodWithSpread {
+    string methodName = 1;
+    repeated bool spreads = 2;
+}
+
+message CallComputedMethod {
+}
+
+message CallComputedMethodWithSpread {
     repeated bool spreads = 1;
 }
 
@@ -223,10 +262,34 @@ message BinaryOperation {
     BinaryOperator op = 1;
 }
 
+message ReassignWithBinop {
+    BinaryOperator op = 1;
+}
+
 message Dup {
 }
 
 message Reassign {
+}
+
+message DestructArray {
+    repeated int32 indices = 1;
+    bool hasRestElement = 2;
+}
+
+message DestructArrayAndReassign {
+    repeated int32 indices = 1;
+    bool hasRestElement = 2;
+}
+
+message DestructObject {
+    repeated string properties = 1;
+    bool hasRestElement = 2;
+}
+
+message DestructObjectAndReassign {
+    repeated string properties = 1;
+    bool hasRestElement = 2;
 }
 
 enum Comparator {
@@ -247,27 +310,27 @@ message Compare {
 message ConditionalOperation {
 }
 
-
 message Eval {
     string code = 1;
 }
 
-message BeginClassDefinition {
+message BeginClass {
     bool hasSuperclass = 1;
-    repeated Type constructorParameters = 2;
+    Parameters constructorParameters = 2;
     repeated string instanceProperties = 3;
     repeated string instanceMethodNames = 4;
-    repeated FunctionSignature instanceMethodSignatures = 5;
+    repeated Parameters instanceMethodParameters = 5;
 }
 
-message BeginMethodDefinition {
+message BeginMethod {
     uint32 numParameters = 1;
 }
 
-message EndClassDefinition {
+message EndClass {
 }
 
 message CallSuperConstructor {
+    repeated bool spreads = 1;
 }
 
 message CallSuperMethod {
@@ -280,6 +343,15 @@ message LoadSuperProperty {
 
 message StoreSuperProperty {
     string propertyName = 1;
+}
+
+message StoreSuperPropertyWithBinop {
+    string propertyName = 1;
+    BinaryOperator op = 2;
+}
+
+message Explore {
+    string id = 1;
 }
 
 message BeginWith {
@@ -303,6 +375,25 @@ message BeginElse {
 }
 
 message EndIf {
+}
+
+message BeginSwitch {
+}
+
+message BeginSwitchCase {
+}
+
+message BeginSwitchDefaultCase {
+}
+
+message SwitchBreak {
+}
+
+message EndSwitchCase {
+    bool fallsThrough = 1;
+}
+
+message EndSwitch {
 }
 
 message BeginWhile {
@@ -336,13 +427,18 @@ message EndForIn {
 message BeginForOf {
 }
 
+message BeginForOfWithDestruct {
+    repeated int32 indices = 1;
+    bool hasRestElement = 2;
+}
+
 message EndForOf {
 }
 
-message Break {
+message LoopBreak {
 }
 
-message Continue {
+message LoopContinue {
 }
 
 message BeginTry {

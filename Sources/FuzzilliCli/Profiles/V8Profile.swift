@@ -16,16 +16,65 @@ import Fuzzilli
 
 fileprivate let ForceV8TurbofanGenerator = CodeGenerator("ForceV8TurbofanGenerator", input: .function()) { b, f in
     guard let arguments = b.randCallArguments(for: f) else { return }
-    
+
     let start = b.loadInt(0)
     let end = b.loadInt(100)
     let step = b.loadInt(1)
-    b.forLoop(start, .lessThan, end, .Add, step) { _ in
+    b.buildForLoop(start, .lessThan, end, .Add, step) { _ in
         b.callFunction(f, withArgs: arguments)
     }
 }
 
-fileprivate let MapTransitionsTemplate = ProgramTemplate("MapTransitionsTemplate", requiresPrefix: false) { b in
+fileprivate let TurbofanVerifyTypeGenerator = CodeGenerator("TurbofanVerifyTypeGenerator", input: .anything) { b, v in
+    b.eval("%VerifyType(%@)", with: [v])
+}
+
+fileprivate let ResizableArrayBufferGenerator = CodeGenerator("ResizableArrayBufferGenerator", input: .anything) { b, v in
+    let size = Int64.random(in: 0...0x1000)
+    let maxSize = Int64.random(in: size...0x1000000)
+    let ArrayBuffer = b.reuseOrLoadBuiltin("ArrayBuffer")
+    let options = b.createObject(with: ["maxByteLength": b.loadInt(maxSize)])
+    let ab = b.construct(ArrayBuffer, withArgs: [b.loadInt(size), options])
+
+    let TypedArray = b.reuseOrLoadBuiltin(
+        chooseUniform(
+            from: ["Uint8Array", "Int8Array", "Uint16Array", "Int16Array", "Uint32Array", "Int32Array", "Float32Array", "Float64Array", "Uint8ClampedArray"]
+        )
+    )
+    b.construct(TypedArray, withArgs: [ab])
+}
+
+fileprivate let SerializeDeserializeGenerator = CodeGenerator("SerializeDeserializeGenerator", input: .object()) { b, o in
+    // Load necessary builtins
+    let d8 = b.reuseOrLoadBuiltin("d8")
+    let serializer = b.loadProperty("serializer", of: d8)
+    let Uint8Array = b.reuseOrLoadBuiltin("Uint8Array")
+
+    // Serialize a random object
+    let content = b.callMethod("serialize", on: serializer, withArgs: [o])
+    let u8 = b.construct(Uint8Array, withArgs: [content])
+
+    // Choose a random byte to change
+    let index = Int64.random(in: 0..<100)
+
+    // Either flip or replace the byte
+    let newByte: Variable
+    if probability(0.5) {
+        let bit = b.loadInt(1 << Int.random(in: 0..<8))
+        let oldByte = b.loadElement(index, of: u8)
+        newByte = b.binary(oldByte, bit, with: .Xor)
+    } else {
+        newByte = b.loadInt(Int64.random(in: 0..<256))
+    }
+    b.storeElement(newByte, at: index, of: u8)
+
+    // Deserialize the resulting buffer
+    let _ = b.callMethod("deserialize", on: serializer, withArgs: [content])
+
+    // Deserialized object is available in a variable now and can be used by following code
+}
+
+fileprivate let MapTransitionsTemplate = ProgramTemplate("MapTransitionsTemplate") { b in
     // This template is meant to stress the v8 Map transition mechanisms.
     // Basically, it generates a bunch of CreateObject, LoadProperty, StoreProperty, FunctionDefinition,
     // and CallFunction operations operating on a small set of objects and property names.
@@ -36,10 +85,10 @@ fileprivate let MapTransitionsTemplate = ProgramTemplate("MapTransitionsTemplate
     // Use this as base object type. For one, this ensures that the initial map is stable.
     // Moreover, this guarantees that when querying for this type, we will receive one of
     // the objects we created and not e.g. a function (which is also an object).
-    let objType = Type.object(withProperties: ["a"])
+    let objType = JSType.object(withProperties: ["a"])
 
     // Signature of functions generated in this template
-    let sig = [objType, objType] => objType
+    let sig = [.plain(objType), .plain(objType)] => objType
 
     // Create property values: integers, doubles, and heap objects.
     // These should correspond to the supported property representations of the engine.
@@ -48,10 +97,15 @@ fileprivate let MapTransitionsTemplate = ProgramTemplate("MapTransitionsTemplate
     let objVal = b.createObject(with: [:])
     let propertyValues = [intVal, floatVal, objVal]
 
-    // Now create a bunch of objects to operate on.
     // Keep track of all objects created in this template so that they can be verified at the end.
     var objects = [objVal]
-    for _ in 0..<5 {
+
+    // Now create a bunch of objects to operate on and one function that constructs a new object.
+    b.buildPlainFunction(with: .parameters(n: 0)) { args in
+        let o = b.createObject(with: ["a": intVal])
+        b.doReturn(o)
+    }
+    for _ in 0..<3 {
         objects.append(b.createObject(with: ["a": intVal]))
     }
 
@@ -73,10 +127,10 @@ fileprivate let MapTransitionsTemplate = ProgramTemplate("MapTransitionsTemplate
     }
     let functionDefinitionGenerator = CodeGenerator("FunctionDefinition") { b in
         let prevSize = objects.count
-        b.definePlainFunction(withSignature: sig) { params in
+        b.buildPlainFunction(with: .signature(sig)) { params in
             objects += params
-            b.generateRecursive()
-            b.doReturn(value: b.randVar(ofType: objType)!)
+            b.buildRecursive()
+            b.doReturn(b.randVar(ofType: objType)!)
         }
         objects.removeLast(objects.count - prevSize)
     }
@@ -90,7 +144,7 @@ fileprivate let MapTransitionsTemplate = ProgramTemplate("MapTransitionsTemplate
     let functionJitCallGenerator = CodeGenerator("FunctionJitCall", input: .function()) { b, f in
         let args = b.randCallArguments(for: sig)!
         assert(objects.contains(args[0]) && objects.contains(args[1]))
-        b.forLoop(b.loadInt(0), .lessThan, b.loadInt(100), .Add, b.loadInt(1)) { _ in
+        b.buildForLoop(b.loadInt(0), .lessThan, b.loadInt(100), .Add, b.loadInt(1)) { _ in
             b.callFunction(f, withArgs: args)       // Rval goes out-of-scope immediately, so no need to track it
         }
     }
@@ -105,18 +159,12 @@ fileprivate let MapTransitionsTemplate = ProgramTemplate("MapTransitionsTemplate
         (functionJitCallGenerator,    1)
     ])
 
-    // Disable splicing, as we only want the above code generators to run
-    b.performSplicingDuringCodeGeneration = false
-
-    // ... and generate a bunch of code, starting with a function so that
-    // there is always at least one available for the call generators.
-    b.run(functionDefinitionGenerator, recursiveCodegenBudget: 10)
-    b.generate(n: 100)
+    // ... and generate a bunch of code.
+    b.build(n: 100, by: .runningGenerators)
 
     // Now, restore the previous code generators, re-enable splicing, and generate some more code
     b.fuzzer.codeGenerators = prevCodeGenerators
-    b.performSplicingDuringCodeGeneration = true
-    b.generate(n: 10)
+    b.build(n: 10)
 
     // Finally, run HeapObjectVerify on all our generated objects (that are still in scope)
     for obj in objects {
@@ -124,116 +172,137 @@ fileprivate let MapTransitionsTemplate = ProgramTemplate("MapTransitionsTemplate
     }
 }
 
+// A variant of the JITFunction template that sprinkles calls to the %VerifyType builtin into the target function.
+// Probably should be kept in sync with the original template.
+fileprivate let VerifyTypeTemplate = ProgramTemplate("VerifyTypeTemplate") { b in
+    let genSize = 3
+
+    // Generate random function signatures as our helpers
+    var functionSignatures = ProgramTemplate.generateRandomFunctionSignatures(forFuzzer: b.fuzzer, n: 2)
+
+    // Generate random property types
+    ProgramTemplate.generateRandomPropertyTypes(forBuilder: b)
+
+    // Generate random method types
+    ProgramTemplate.generateRandomMethodTypes(forBuilder: b, n: 2)
+
+    b.build(n: genSize)
+
+    // Generate some small functions
+    for signature in functionSignatures {
+        // Here generate a random function type, e.g. arrow/generator etc
+        b.buildPlainFunction(with: .signature(signature)) { args in
+            b.build(n: genSize)
+        }
+    }
+
+    // Generate a larger function
+    let signature = ProgramTemplate.generateSignature(forFuzzer: b.fuzzer, n: 4)
+    let f = b.buildPlainFunction(with: .signature(signature)) { args in
+        // Generate function body and sprinkle calls to %VerifyType
+        for _ in 0..<10 {
+            b.build(n: 3)
+            b.eval("%VerifyType(%@)", with: [b.randVar()])
+        }
+    }
+
+    // Generate some random instructions now
+    b.build(n: genSize)
+
+    // trigger JIT
+    b.buildForLoop(b.loadInt(0), .lessThan, b.loadInt(100), .Add, b.loadInt(1)) { args in
+        b.callFunction(f, withArgs: b.generateCallArguments(for: signature))
+    }
+
+    // more random instructions
+    b.build(n: genSize)
+    b.callFunction(f, withArgs: b.generateCallArguments(for: signature))
+
+    // maybe trigger recompilation
+    b.buildForLoop(b.loadInt(0), .lessThan, b.loadInt(100), .Add, b.loadInt(1)) { args in
+        b.callFunction(f, withArgs: b.generateCallArguments(for: signature))
+    }
+
+    // more random instructions
+    b.build(n: genSize)
+
+    b.callFunction(f, withArgs: b.generateCallArguments(for: signature))
+}
+
 let v8Profile = Profile(
-    processArguments: [
-//        "--expose-gc",
-                       "--single-threaded",
-                       "--predictable",
-                       "--allow-natives-syntax",
-                       "--interrupt-budget=1024",
-                       //"--assert-types",
-                       "--fuzzing"],
+    getProcessArguments: { (randomizingArguments: Bool) -> [String] in
+        var args = [
+            "--expose-gc",
+            "--future",
+            "--harmony",
+            "--assert-types",
+            "--harmony-rab-gsab",
+            "--allow-natives-syntax",
+            "--interrupt-budget=1000",
+            "--fuzzing"]
+
+        guard randomizingArguments else { return args }
+
+        args.append(probability(0.9) ? "--sparkplug" : "--no-sparkplug")
+        args.append(probability(0.9) ? "--opt" : "--no-opt")
+        args.append(probability(0.9) ? "--lazy" : "--no-lazy")
+        args.append(probability(0.1) ? "--always-opt" : "--no-always-opt")
+        args.append(probability(0.1) ? "--always-osr" : "--no-always-osr")
+        args.append(probability(0.1) ? "--force-slow-path" : "--no-force-slow-path")
+        args.append(probability(0.9) ? "--turbo-move-optimization" : "--no-turbo-move-optimization")
+        args.append(probability(0.9) ? "--turbo-jt" : "--no-turbo-jt")
+        args.append(probability(0.9) ? "--turbo-loop-peeling" : "--no-turbo-loop-peeling")
+        args.append(probability(0.9) ? "--turbo-loop-variable" : "--no-turbo-loop-variable")
+        args.append(probability(0.9) ? "--turbo-loop-rotation" : "--no-turbo-loop-rotation")
+        args.append(probability(0.9) ? "--turbo-cf-optimization" : "--no-turbo-cf-optimization")
+        args.append(probability(0.9) ? "--turbo-escape" : "--no-turbo-escape")
+        args.append(probability(0.9) ? "--turbo-allocation-folding" : "--no-turbo-allocation-folding")
+        args.append(probability(0.9) ? "--turbo-instruction-scheduling" : "--no-turbo-instruction-scheduling")
+        args.append(probability(0.9) ? "--turbo-stress-instruction-scheduling" : "--no-turbo-stress-instruction-scheduling")
+        args.append(probability(0.9) ? "--turbo-store-elimination" : "--no-turbo-store-elimination")
+        args.append(probability(0.9) ? "--turbo-rewrite-far-jumps" : "--no-turbo-rewrite-far-jumps")
+        args.append(probability(0.9) ? "--turbo-optimize-apply" : "--no-turbo-optimize-apply")
+        args.append(chooseUniform(from: ["--no-enable-sse3", "--no-enable-ssse3", "--no-enable-sse4-1", "--no-enable-sse4-2", "--no-enable-avx", "--no-enable-avx2",]))
+        args.append(probability(0.9) ? "--turbo-load-elimination" : "--no-turbo-load-elimination")
+        args.append(probability(0.9) ? "--turbo-inlining" : "--no-turbo-inlining")
+        args.append(probability(0.9) ? "--turbo-splitting" : "--no-turbo-splitting")
+
+        return args
+    },
 
     processEnv: [:],
 
     codePrefix: """
-                function classOf(object) {
-                   var string = Object.prototype.toString.call(object);
-                   return string.substring(8, string.length - 1);
-                }
-
-                function deepObjectEquals(a, b) {
-                  var aProps = Object.keys(a);
-                  aProps.sort();
-                  var bProps = Object.keys(b);
-                  bProps.sort();
-                  if (!deepEquals(aProps, bProps)) {
-                    return false;
-                  }
-                  for (var i = 0; i < aProps.length; i++) {
-                    if (!deepEquals(a[aProps[i]], b[aProps[i]])) {
-                      return false;
-                    }
-                  }
-                  return true;
-                }
-
-                function deepEquals(a, b) {
-                  if (a === b) {
-                    if (a === 0) return (1 / a) === (1 / b);
-                    return true;
-                  }
-                  if (typeof a != typeof b) return false;
-                  if (typeof a == 'number') return (isNaN(a) && isNaN(b)) || (a===b);
-                  if (typeof a !== 'object' && typeof a !== 'function' && typeof a !== 'symbol') return false;
-                  var objectClass = classOf(a);
-                  if (objectClass === 'Array') {
-                    if (a.length != b.length) {
-                      return false;
-                    }
-                    for (var i = 0; i < a.length; i++) {
-                      if (!deepEquals(a[i], b[i])) return false;
-                    }
-                    return true;
-                  }                
-                  if (objectClass !== classOf(b)) return false;
-                  if (objectClass === 'RegExp') {
-                    return (a.toString() === b.toString());
-                  }
-                  if (objectClass === 'Function') return true;
-                  
-                  if (objectClass == 'String' || objectClass == 'Number' ||
-                      objectClass == 'Boolean' || objectClass == 'Date') {
-                    if (a.valueOf() !== b.valueOf()) return false;
-                  }
-                  return deepObjectEquals(a, b);
-                }
-
-                function opt(opt_param){
+                function main() {
                 """,
 
     codeSuffix: """
+                gc();
                 }
-                let jit_a0 = opt(false);
-                opt(true);
-                let jit_a0_0 = opt(false);
-                %PrepareFunctionForOptimization(opt);
-                let jit_a1 = opt(true);
-                %OptimizeFunctionOnNextCall(opt);
-                let jit_a2 = opt(false);
-                if (jit_a0 === undefined && jit_a2 === undefined) {
-                    opt(true);
-                } else {
-                    if (jit_a0_0===jit_a0 && !deepEquals(jit_a0, jit_a2)) {
-                        fuzzilli('FUZZILLI_CRASH', 0);
-                    }
-                }
+                %NeverOptimizeFunction(main);
+                main();
                 """,
 
     ecmaVersion: ECMAScriptVersion.es6,
 
     crashTests: ["fuzzilli('FUZZILLI_CRASH', 0)", "fuzzilli('FUZZILLI_CRASH', 1)", "fuzzilli('FUZZILLI_CRASH', 2)"],
 
-    additionalCodeGenerators: WeightedList<CodeGenerator>([
-//        (ForceV8TurbofanGenerator, 10),
-    ]),
+    additionalCodeGenerators: [
+        (ForceV8TurbofanGenerator,      10),
+        (TurbofanVerifyTypeGenerator,   10),
+        (ResizableArrayBufferGenerator, 10),
+        (SerializeDeserializeGenerator, 10),
+    ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([
-//        (MapTransitionsTemplate, 1)
+        (MapTransitionsTemplate, 1),
+        (VerifyTypeTemplate, 1)
     ]),
 
     disabledCodeGenerators: [],
 
     additionalBuiltins: [
-        :
-//        "gc"                                            : .function([] => .undefined),
-//        "PrepareFunctionForOptimization"                : .function([.function()] => .undefined),
-//        "OptimizeFunctionOnNextCall"                    : .function([.function()] => .undefined),
-//        "NeverOptimizeFunction"                         : .function([.function()] => .undefined),
-//        "DeoptimizeFunction"                            : .function([.function()] => .undefined),
-//        "DeoptimizeNow"                                 : .function([] => .undefined),
-//        "OptimizeOsr"                                   : .function([] => .undefined),
-//        "placeholder"                                   : .function([] => .object()),
-//        "print"                : .function([] => .undefined),
+        "gc"                                            : .function([] => .undefined),
+        "d8"                                            : .object(),
     ]
 )

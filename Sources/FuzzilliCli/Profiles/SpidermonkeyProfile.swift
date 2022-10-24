@@ -16,120 +16,86 @@ import Fuzzilli
 
 fileprivate let ForceSpidermonkeyIonGenerator = CodeGenerator("ForceSpidermonkeyIonGenerator", input: .function()) { b, f in
    guard let arguments = b.randCallArguments(for: f) else { return }
-    
+
     let start = b.loadInt(0)
     let end = b.loadInt(100)
     let step = b.loadInt(1)
-    b.forLoop(start, .lessThan, end, .Add, step) { _ in
+    b.buildForLoop(start, .lessThan, end, .Add, step) { _ in
         b.callFunction(f, withArgs: arguments)
     }
 }
 
 let spidermonkeyProfile = Profile(
-    processArguments: [
-        "--no-threads",
-        "--cpu-count=1",
-        "--ion-offthread-compile=off",
-        "--baseline-warmup-threshold=10",
-        "--ion-warmup-threshold=50",
-        "--ion-check-range-analysis",
-        "--ion-extra-checks",
-        "--fuzzing-safe",
-        "--reprl",
-    ],
+    getProcessArguments: { (randomizingArguments: Bool) -> [String] in
+        var args = [
+            "--baseline-warmup-threshold=10",
+            "--ion-warmup-threshold=100",
+            "--ion-check-range-analysis",
+            "--ion-extra-checks",
+            "--fuzzing-safe",
+            "--reprl"]
+
+        guard randomizingArguments else { return args }
+
+        args.append("--small-function-length=\(1<<Int.random(in: 7...12))")
+        args.append("--inlining-entry-threshold=\(1<<Int.random(in: 2...10))")
+        args.append("--gc-zeal=\(probability(0.5) ? UInt32(0) : UInt32(Int.random(in: 1...24)))")
+        args.append("--ion-scalar-replacement=\(probability(0.9) ? "on": "off")")
+        args.append("--ion-pruning=\(probability(0.9) ? "on": "off")")
+        args.append("--ion-range-analysis=\(probability(0.9) ? "on": "off")")
+        args.append("--ion-inlining=\(probability(0.9) ? "on": "off")")
+        args.append("--ion-gvn=\(probability(0.9) ? "on": "off")")
+        args.append("--ion-osr=\(probability(0.9) ? "on": "off")")
+        args.append("--ion-edgecase-analysis=\(probability(0.9) ? "on": "off")")
+        args.append("--nursery-size=\(1<<Int.random(in: 0...5))")
+        args.append("--nursery-strings=\(probability(0.9) ? "on": "off")")
+        args.append("--nursery-bigints=\(probability(0.9)  ? "on": "off")")
+        args.append("--spectre-mitigations=\(probability(0.1) ? "on": "off")")
+        if probability(0.1) {
+            args.append("--no-native-regexp")
+        }
+        args.append("--ion-optimize-shapeguards=\(probability(0.9) ? "on": "off")")
+        args.append("--ion-licm=\(probability(0.9) ? "on": "off")")
+        args.append("--ion-instruction-reordering=\(probability(0.9) ? "on": "off")")
+        args.append("--cache-ir-stubs=\(probability(0.9) ? "on": "off")")
+        args.append(chooseUniform(from: ["--no-sse3", "--no-ssse3", "--no-sse41", "--no-sse42", "--enable-avx"]))
+        if probability(0.1) {
+            args.append("--ion-regalloc=testbed")
+        }
+        args.append(probability(0.9) ? "--enable-watchtower" : "--disable-watchtower")
+        args.append("--ion-sink=\(probability(0.0) ? "on": "off")") // disabled
+        return args
+    },
 
     processEnv: ["UBSAN_OPTIONS": "handle_segv=0"],
 
     codePrefix: """
-                function classOf(object) {
-                   var string = Object.prototype.toString.call(object);
-                   return string.substring(8, string.length - 1);
-                }
-
-                function deepObjectEquals(a, b) {
-                  var aProps = Object.keys(a);
-                  aProps.sort();
-                  var bProps = Object.keys(b);
-                  bProps.sort();
-                  if (!deepEquals(aProps, bProps)) {
-                    return false;
-                  }
-                  for (var i = 0; i < aProps.length; i++) {
-                    if (!deepEquals(a[aProps[i]], b[aProps[i]])) {
-                      return false;
-                    }
-                  }
-                  return true;
-                }
-
-                function deepEquals(a, b) {
-                  if (a === b) {
-                    if (a === 0) return (1 / a) === (1 / b);
-                    return true;
-                  }
-                  if (typeof a != typeof b) return false;
-                  if (typeof a == 'number') return (isNaN(a) && isNaN(b)) || (a===b);
-                  if (typeof a !== 'object' && typeof a !== 'function' && typeof a !== 'symbol') return false;
-                  var objectClass = classOf(a);
-                  if (objectClass === 'Array') {
-                    if (a.length != b.length) {
-                      return false;
-                    }
-                    for (var i = 0; i < a.length; i++) {
-                      if (!deepEquals(a[i], b[i])) return false;
-                    }
-                    return true;
-                  }                
-                  if (objectClass !== classOf(b)) return false;
-                  if (objectClass === 'RegExp') {
-                    return (a.toString() === b.toString());
-                  }
-                  if (objectClass === 'Function') return true;
-                  
-                  if (objectClass == 'String' || objectClass == 'Number' ||
-                      objectClass == 'Boolean' || objectClass == 'Date') {
-                    if (a.valueOf() !== b.valueOf()) return false;
-                  }
-                  return deepObjectEquals(a, b);
-                }
-
-                function opt(opt_param){
+                function main() {
                 """,
 
     codeSuffix: """
+                gc();
                 }
-                let jit_a0 = opt(true);
-                let jit_a0_0 = opt(false);
-                for(let i=0;i<0x50;i++){opt(false);}
-                let jit_a2 = opt(true);
-                if (jit_a0 === undefined && jit_a2 === undefined) {
-                    opt(true);
-                } else {
-                    if (jit_a0_0===jit_a0 && !deepEquals(jit_a0, jit_a2)) {
-                        fuzzilli('FUZZILLI_CRASH', 0);
-                    }
-                }
+                main();
                 """,
 
     ecmaVersion: ECMAScriptVersion.es6,
 
     crashTests: ["fuzzilli('FUZZILLI_CRASH', 0)", "fuzzilli('FUZZILLI_CRASH', 1)", "fuzzilli('FUZZILLI_CRASH', 2)"],
 
-    additionalCodeGenerators: WeightedList<CodeGenerator>([
-//        (ForceSpidermonkeyIonGenerator, 10),
-    ]),
+    additionalCodeGenerators: [
+        (ForceSpidermonkeyIonGenerator, 10),
+    ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([]),
 
     disabledCodeGenerators: [],
 
     additionalBuiltins: [
-        :
-//        "gc"            : .function([] => .undefined),
-        // "enqueueJob"    : .function([.function()] => .undefined),
-        // "drainJobQueue" : .function([] => .undefined),
-        // "bailout"       : .function([] => .undefined),
-        // "placeholder"   : .function([] => .undefined),
+        "gc"            : .function([] => .undefined),
+        "enqueueJob"    : .function([.function()] => .undefined),
+        "drainJobQueue" : .function([] => .undefined),
+        "bailout"       : .function([] => .undefined),
 
     ]
 )

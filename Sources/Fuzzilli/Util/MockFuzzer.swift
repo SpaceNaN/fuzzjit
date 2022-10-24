@@ -14,7 +14,7 @@
 
 import Foundation
 
-// Mock implementations of fuzzer components. For testing and benchmarking
+// Mock implementations of fuzzer components for testing.
 
 struct MockExecution: Execution {
     let outcome: ExecutionOutcome
@@ -25,6 +25,8 @@ struct MockExecution: Execution {
 }
 
 class MockScriptRunner: ScriptRunner {
+    var processArguments: [String] = []
+
     func run(_ script: String, withTimeout timeout: UInt32) -> Execution {
         return MockExecution(outcome: .succeeded,
                              stdout: "",
@@ -56,20 +58,20 @@ class MockEnvironment: ComponentBase, Environment {
     var customPropertyNames = Set(["foo", "bar"])
     var customMethodNames = Set(["m1", "m2"])
 
-    var intType = Type.integer
-    var bigIntType = Type.bigint
-    var regExpType = Type.regexp
-    var floatType = Type.float
-    var booleanType = Type.boolean
-    var stringType = Type.string
-    var objectType = Type.object()
-    var arrayType = Type.object()
+    var intType = JSType.integer
+    var bigIntType = JSType.bigint
+    var regExpType = JSType.regexp
+    var floatType = JSType.float
+    var booleanType = JSType.boolean
+    var stringType = JSType.string
+    var objectType = JSType.object()
+    var arrayType = JSType.object()
 
-    func functionType(forSignature signature: FunctionSignature) -> Type {
+    func functionType(forSignature signature: Signature) -> JSType {
         return .unknown
     }
 
-    func type(ofBuiltin builtinName: String) -> Type {
+    func type(ofBuiltin builtinName: String) -> JSType {
         return builtinTypes[builtinName] ?? .unknown
     }
 
@@ -77,7 +79,7 @@ class MockEnvironment: ComponentBase, Environment {
         return ["blafoo"]
     }
 
-    func type(ofProperty propertyName: String, on baseType: Type) -> Type {
+    func type(ofProperty propertyName: String, on baseType: JSType) -> JSType {
         if let groupName = baseType.group {
             if let groupProperties = propertiesByGroup[groupName] {
                 if let propertyType = groupProperties[propertyName] {
@@ -88,7 +90,7 @@ class MockEnvironment: ComponentBase, Environment {
         return .unknown
     }
 
-    func signature(ofMethod methodName: String, on baseType: Type) -> FunctionSignature {
+    func signature(ofMethod methodName: String, on baseType: JSType) -> Signature {
         if let groupName = baseType.group {
             if let groupMethods = methodsByGroup[groupName] {
                 if let methodSignature = groupMethods[methodName] {
@@ -96,14 +98,14 @@ class MockEnvironment: ComponentBase, Environment {
                 }
             }
         }
-        return FunctionSignature.forUnknownFunction
+        return Signature.forUnknownFunction
     }
 
-    let builtinTypes: [String: Type]
-    let propertiesByGroup: [String: [String: Type]]
-    let methodsByGroup: [String: [String: FunctionSignature]]
+    let builtinTypes: [String: JSType]
+    let propertiesByGroup: [String: [String: JSType]]
+    let methodsByGroup: [String: [String: Signature]]
 
-    init(builtins builtinTypes: [String: Type], propertiesByGroup: [String: [String: Type]] = [:], methodsByGroup: [String: [String: FunctionSignature]] = [:]) {
+    init(builtins builtinTypes: [String: JSType], propertiesByGroup: [String: [String: JSType]] = [:], methodsByGroup: [String: [String: Signature]] = [:]) {
         self.builtinTypes = builtinTypes
         // Builtins must not be empty for now
         self.builtins = builtinTypes.isEmpty ? Set(["Foo", "Bar"]) : Set(builtinTypes.keys)
@@ -142,7 +144,7 @@ class MockEvaluator: ProgramEvaluator {
 
     func importState(_ state: Data) {}
 
-    func evaluateAndIntersect(_ program: Program, with aspects: ProgramAspects) -> ProgramAspects? {
+    func computeAspectIntersection(of program: Program, with aspects: ProgramAspects) -> ProgramAspects? {
         return nil
     }
 
@@ -151,8 +153,7 @@ class MockEvaluator: ProgramEvaluator {
 
 /// Create a fuzzer instance usable for testing.
 public func makeMockFuzzer(engine maybeEngine: FuzzEngine? = nil, runner maybeRunner: ScriptRunner? = nil, environment maybeEnvironment: Environment? = nil,
-    evaluator maybeEvaluator: ProgramEvaluator? = nil, corpus maybeCorpus: Corpus? = nil, deterministicCorpus maybeDeterministicCorpus: Bool? = false,
-    minDeterminismExecs maybeMinDeterminismExecs: Int = 3, maxDeterminismExecs maybeMaxDeterminismExecs: Int = 7) -> Fuzzer {
+    evaluator maybeEvaluator: ProgramEvaluator? = nil, corpus maybeCorpus: Corpus? = nil) -> Fuzzer {
     dispatchPrecondition(condition: .onQueue(DispatchQueue.main))
 
     // The configuration of this fuzzer.
@@ -163,11 +164,11 @@ public func makeMockFuzzer(engine maybeEngine: FuzzEngine? = nil, runner maybeRu
 
     // the mutators to use for this fuzzing engine.
     let mutators = WeightedList<Mutator>([
-        (CodeGenMutator(),   1),
-        (OperationMutator(), 1),
-        (InputMutator(),     1),
-        (CombineMutator(),   1),
-//        (JITStressMutator(), 1),
+        (CodeGenMutator(),                  1),
+        (OperationMutator(),                1),
+        (InputMutator(isTypeAware: false),  1),
+        (CombineMutator(),                  1),
+        (JITStressMutator(),                1),
     ])
 
     let engine = maybeEngine ?? MutationEngine(numConsecutiveMutations: 5)
@@ -183,9 +184,6 @@ public func makeMockFuzzer(engine maybeEngine: FuzzEngine? = nil, runner maybeRu
 
     // Corpus managing interesting programs that have been found during fuzzing.
     let corpus = maybeCorpus ?? BasicCorpus(minSize: 1000, maxSize: 2000, minMutationsPerSample: 5)
-
-    // Whether or not only deterministic samples should be added to the corpus
-    let deterministicCorpus = maybeDeterministicCorpus ?? false
 
     // Minimizer to minimize crashes and interesting programs.
     let minimizer = Minimizer()
@@ -207,9 +205,6 @@ public func makeMockFuzzer(engine maybeEngine: FuzzEngine? = nil, runner maybeRu
                         environment: environment,
                         lifter: lifter,
                         corpus: corpus,
-                        deterministicCorpus: deterministicCorpus,
-                        minDeterminismExecs: maybeMinDeterminismExecs,
-                        maxDeterminismExecs: maybeMaxDeterminismExecs,
                         minimizer: minimizer,
                         queue: DispatchQueue.main)
 
@@ -218,5 +213,11 @@ public func makeMockFuzzer(engine maybeEngine: FuzzEngine? = nil, runner maybeRu
     }
 
     fuzzer.initialize()
+
+    // Tests can also rely on the corpus not being empty
+    let b = fuzzer.makeBuilder()
+    b.createObject(with: [:])
+    corpus.add(b.finalize(), ProgramAspects(outcome: .succeeded))
+
     return fuzzer
 }

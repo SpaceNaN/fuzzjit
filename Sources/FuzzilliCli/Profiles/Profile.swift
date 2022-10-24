@@ -15,7 +15,7 @@
 import Fuzzilli
 
 struct Profile {
-    let processArguments: [String]
+    let getProcessArguments: (_: Bool) -> [String]
     let processEnv: [String : String]
     let codePrefix: String
     let codeSuffix: String
@@ -24,21 +24,22 @@ struct Profile {
     // JavaScript code snippets that cause a crash in the target engine.
     // Used to verify that crashes can be detected.
     let crashTests: [String]
-    
-    let additionalCodeGenerators: WeightedList<CodeGenerator>
+
+    let additionalCodeGenerators: [(CodeGenerator, Int)]
     let additionalProgramTemplates: WeightedList<ProgramTemplate>
-    
+
     let disabledCodeGenerators: [String]
-    
-    let additionalBuiltins: [String: Type]
+
+    let additionalBuiltins: [String: JSType]
 }
 
 let profiles = [
+    "qtjs": qtjsProfile,
     "qjs": qjsProfile,
     "jsc": jscProfile,
     "spidermonkey": spidermonkeyProfile,
     "v8": v8Profile,
     "duktape": duktapeProfile,
     "jerryscript": jerryscriptProfile,
-    "chakra": chakraProfile,
+    "xs": xsProfile,
 ]

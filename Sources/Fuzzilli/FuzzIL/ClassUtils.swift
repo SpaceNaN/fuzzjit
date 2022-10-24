@@ -15,33 +15,29 @@
 /// Helper class to store  information about a FuzzIL class definition.
 ///
 /// This is mainly needed to retrieve information about method definitions, since the method name
-/// and signature are only stored in the BeginClassDefinition operation, not in the BeginMethodDefinition.
+/// and signature are only stored in the BeginClass operation, not in the BeginMethodDefinition.
 class ClassDefinition {
     // An arbitrary name given to this class.
     let name: String
 
     // Instance type of the superclass. .nothing if there is no superclass
-    let superType: Type
+    let superType: JSType
     // Instance type of this class, including the supertype
-    let instanceType: Type
-
-    // Signature of the constructor, with the instance type being the return type.
-    let constructorSignature: FunctionSignature
+    let instanceType: JSType
 
     // Method definitions that haven't been processed yet by nextMethod().
-    private var remainingMethods: [(name: String, signature: FunctionSignature)]
+    private var remainingMethods: [(name: String, parameters: Parameters)]
 
-    private init(name: String, superType: Type, instanceType: Type, constructorSignature: FunctionSignature, methods: [(String, FunctionSignature)]) {
+    private init(name: String, superType: JSType, instanceType: JSType, methods: [(String, Parameters)]) {
         self.name = name
         self.superType = superType
         self.instanceType = instanceType
-        self.constructorSignature = constructorSignature
         self.remainingMethods = methods.reversed()         // reversed so nextMethod() works efficiently
     }
 
-    convenience init(from op: BeginClassDefinition, withSuperType superType: Type = .nothing, name: String = "") {
+    convenience init(from op: BeginClass, withSuperType superType: JSType = .nothing, name: String = "") {
         // Compute "pure" instance type
-        var instanceType = Type.object(ofGroup: nil,
+        var instanceType = JSType.object(ofGroup: nil,
                                        withProperties: op.instanceProperties,
                                        withMethods: op.instanceMethods.map( { $0.name }))
 
@@ -51,12 +47,9 @@ class ClassDefinition {
             instanceType += superType
         }
 
-        let constructorSignature = op.constructorParameters => instanceType
-
         self.init(name: name,
                   superType: superType,
                   instanceType: instanceType,
-                  constructorSignature: constructorSignature,
                   methods: op.instanceMethods)
     }
 
@@ -66,12 +59,12 @@ class ClassDefinition {
     }
 
     /// Returns all method definitions that haven't yet been processed by nextMethod.
-    func pendingMethods() -> [(name: String, signature: FunctionSignature)] {
+    func pendingMethods() -> [(name: String, parameters: Parameters)] {
         return remainingMethods.reversed()
     }
 
     /// Returns the next method definition that hasn't been processed yet and marks it as processed.
-    func nextMethod() -> (name: String, signature: FunctionSignature) {
+    func nextMethod() -> (name: String, parameters: Parameters) {
         assert(hasPendingMethods)
         return remainingMethods.removeLast()
     }

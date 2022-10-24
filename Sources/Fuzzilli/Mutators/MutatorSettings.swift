@@ -17,5 +17,5 @@
 // higher than that, and samples are too similar to each other, lower than that, and too many samples are invalid.
 // TODO evaluate this independently for every mutator.
 
-let defaultMaxSimultaneousMutations = 1
-let defaultMaxCodeGenerationAmount = 1
+let defaultMaxSimultaneousMutations = 7
+let defaultMaxCodeGenerationAmount = 5

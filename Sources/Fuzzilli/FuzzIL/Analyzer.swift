@@ -24,7 +24,7 @@ extension Analyzer {
     mutating func analyze(_ program: Program) {
         analyze(program.code)
     }
-    
+
     mutating func analyze(_ code: Code) {
         assert(code.isStaticallyValid())
         for instr in code {
@@ -38,13 +38,24 @@ struct VariableAnalyzer: Analyzer {
     private var assignments = VariableMap<[Int]>()
     private var uses = VariableMap<[Int]>()
     private let code: Code
-    
+    private var analysisDone = false
+
     init(for program: Program) {
         self.code = program.code
-        analyze(program)
     }
-    
+
+    mutating func finishAnalysis() {
+        analysisDone = true
+    }
+
+    mutating func analyze() {
+        analyze(code)
+        finishAnalysis()
+    }
+
     mutating func analyze(_ instr: Instruction) {
+        assert(code[instr.index].op === instr.op)    // Must be operating on the program passed in during construction
+        assert(!analysisDone)
         for v in instr.allOutputs {
             assignments[v] = [instr.index]
             uses[v] = []
@@ -57,43 +68,43 @@ struct VariableAnalyzer: Analyzer {
             }
         }
     }
-    
+
     /// Returns the instruction that defines the given variable.
     func definition(of variable: Variable) -> Instruction {
         assert(assignments.contains(variable))
         return code[assignments[variable]![0]]
     }
-    
+
     /// Returns all instructions that assign the given variable, including its initial definition.
     func assignments(of variable: Variable) -> [Instruction] {
         assert(assignments.contains(variable))
         return assignments[variable]!.map({ code[$0] })
     }
-    
+
     /// Returns the instructions using the given variable.
     func uses(of variable: Variable) -> [Instruction] {
         assert(uses.contains(variable))
         return uses[variable]!.map({ code[$0] })
     }
-    
+
     /// Returns the indices of the instructions using the given variable.
     func assignmentIndices(of variable: Variable) -> [Int] {
         assert(uses.contains(variable))
         return assignments[variable]!
     }
-    
+
     /// Returns the indices of the instructions using the given variable.
     func usesIndices(of variable: Variable) -> [Int] {
         assert(uses.contains(variable))
         return uses[variable]!
     }
-    
+
     /// Returns the number of instructions using the given variable.
     func numAssignments(of variable: Variable) -> Int {
         assert(assignments.contains(variable))
         return assignments[variable]!.count
     }
-    
+
     /// Returns the number of instructions using the given variable.
     func numUses(of variable: Variable) -> Int {
         assert(uses.contains(variable))
@@ -103,9 +114,9 @@ struct VariableAnalyzer: Analyzer {
 
 /// Keeps track of currently visible variables during program construction.
 struct ScopeAnalyzer: Analyzer {
-    var scopes = [[Variable]()]
-    var visibleVariables = [Variable]()
- 
+    private(set) var scopes = [[Variable]()]
+    private(set) var visibleVariables = [Variable]()
+
     mutating func analyze(_ instr: Instruction) {
         // Scope management (1).
         if instr.isBlockEnd {
@@ -113,77 +124,55 @@ struct ScopeAnalyzer: Analyzer {
             let current = scopes.removeLast()
             visibleVariables.removeLast(current.count)
         }
-        
+
         scopes[scopes.count - 1].append(contentsOf: instr.outputs)
         visibleVariables.append(contentsOf: instr.outputs)
-        
+
         // Scope management (2). Happens here since e.g. function definitions create a variable in the outer scope.
         // This code has to be somewhat careful since e.g. BeginElse both ends and begins a variable scope.
-        if instr.isBlockBegin {
+        if instr.isBlockStart {
             scopes.append([])
         }
-        
+
         scopes[scopes.count - 1].append(contentsOf: instr.innerOutputs)
         visibleVariables.append(contentsOf: instr.innerOutputs)
     }
 }
 
-/// Current context in the program
-public struct ProgramContext: OptionSet {
-    public let rawValue: Int
-    
-    public init(rawValue: Int) {
-        self.rawValue = rawValue
-    }
-    
-    // Default script context
-    public static let script            = ProgramContext([])
-    // Inside a function definition
-    public static let function          = ProgramContext(rawValue: 1 << 0)
-    // Inside a generator function definition
-    public static let generatorFunction = ProgramContext(rawValue: 1 << 1)
-    // Inside an async function definition
-    public static let asyncFunction     = ProgramContext(rawValue: 1 << 2)
-    // Inside a loop
-    public static let loop              = ProgramContext(rawValue: 1 << 3)
-    // Inside a with statement
-    public static let with              = ProgramContext(rawValue: 1 << 4)
-    // Inside a class definition
-    public static let classDefinition   = ProgramContext(rawValue: 1 << 5)
-    
-    public static let empty             = ProgramContext([])
-    public static let any               = ProgramContext([.script, .function, .generatorFunction, .asyncFunction, .loop, .with, .classDefinition])
-}
-
 /// Keeps track of the current context during program construction.
 struct ContextAnalyzer: Analyzer {
-    private var contextStack = [ProgramContext.script]
-    
-    var context: ProgramContext {
+    private var contextStack = [Context.javascript]
+
+    var context: Context {
         return contextStack.last!
     }
-    
+
     mutating func analyze(_ instr: Instruction) {
-        if instr.isLoopEnd ||
-            instr.op is EndAnyFunctionDefinition ||
-            instr.op is EndWith {
-            _ = contextStack.popLast()
-        } else if instr.isLoopBegin {
-            contextStack.append([context, .loop])
-        } else if instr.op is BeginAnyFunctionDefinition {
-            // We are no longer in the previous context
-            var newContext = ProgramContext([.function])
-            if instr.op is BeginGeneratorFunctionDefinition {
-                newContext.formUnion(.generatorFunction)
-            } else if instr.op is BeginAsyncFunctionDefinition {
-                newContext.formUnion(.asyncFunction)
+        if instr.isBlockEnd {
+            contextStack.removeLast()
+        }
+        if instr.isBlockStart {
+            var newContext = instr.op.contextOpened
+            if instr.propagatesSurroundingContext {
+                newContext.formUnion(context)
+            }
+
+            // If we resume the context analysis, we currently take the second to last context.
+            // This currently only works if we have a single layer of these instructions.
+            if instr.skipsSurroundingContext {
+                assert(contextStack.count >= 2)
+                let suffix = contextStack.suffix(from: contextStack.count - 2)
+                newContext = suffix.first!
+
+                // We assume our last context is only a single context.
+                assert(suffix.last!.contains(.switchBlock))
+                var lastContext = suffix.last!
+                lastContext.subtract(.switchBlock)
+                assert(lastContext == .empty)
+
+                newContext.formUnion(instr.op.contextOpened)
             }
             contextStack.append(newContext)
-        } else if instr.op is BeginWith {
-            contextStack.append([context, .with])
-        } else if instr.op is BeginClassDefinition {
-            // We are no longer in the previous context
-            contextStack.append([.classDefinition, .function])
         }
     }
 }
@@ -191,16 +180,16 @@ struct ContextAnalyzer: Analyzer {
 /// Determines whether code after the current instruction is dead code (i.e. can never be executed).
 struct DeadCodeAnalyzer: Analyzer {
     private var depth = 0
-    
+
     var currentlyInDeadCode: Bool {
         return depth != 0
     }
-    
+
     mutating func analyze(_ instr: Instruction) {
         if instr.isBlockEnd && currentlyInDeadCode {
             depth -= 1
         }
-        if instr.isBlockBegin && currentlyInDeadCode {
+        if instr.isBlockStart && currentlyInDeadCode {
             depth += 1
         }
         if instr.isJump && !currentlyInDeadCode {

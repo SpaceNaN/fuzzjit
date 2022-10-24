@@ -30,11 +30,11 @@ import Foundation
 public class BasicCorpus: ComponentBase, Collection, Corpus {
     /// The minimum number of samples that should be kept in the corpus.
     private let minSize: Int
-    
+
     /// The minimum number of times that a sample from the corpus was used
     /// for mutation before it can be discarded from the active set.
     private let minMutationsPerSample: Int
-    
+
     /// The current set of interesting programs used for mutations.
     private var programs: RingBuffer<Program>
     private var ages: RingBuffer<Int>
@@ -42,47 +42,43 @@ public class BasicCorpus: ComponentBase, Collection, Corpus {
     /// Counts the total number of entries in the corpus.
     private var totalEntryCounter = 0
 
-    /// Corpus deduplicates the runtime types of its programs to conserve memory.
-    private var typeExtensionDeduplicationSet = Set<TypeExtension>()
-    
     public init(minSize: Int, maxSize: Int, minMutationsPerSample: Int) {
         // The corpus must never be empty. Other components, such as the ProgramBuilder, rely on this
         assert(minSize >= 1)
         assert(maxSize >= minSize)
-        
+
         self.minSize = minSize
         self.minMutationsPerSample = minMutationsPerSample
 
         self.programs = RingBuffer(maxSize: maxSize)
         self.ages = RingBuffer(maxSize: maxSize)
-        
+
         super.init(name: "Corpus")
     }
-    
+
     override func initialize() {
         // Schedule a timer to perform cleanup regularly
         fuzzer.timers.scheduleTask(every: 30 * Minutes, cleanup)
-        
-        // The corpus must never be empty
-        if self.isEmpty {
-            // The fuzzer runs several sample programs on start to check for successful
-            // execution by the target engine. Thus, the seed program is known to successfully
-            // execute
-            add(makeSeedProgram(), ProgramAspects(outcome: .succeeded))
-        }
     }
-    
+
     public var size: Int {
         return programs.count
     }
-    
+
     public var isEmpty: Bool {
         return size == 0
     }
- 
+
+    public var supportsFastStateSynchronization: Bool {
+        return true
+    }
+
     public func add(_ program: Program, _ : ProgramAspects) {
+        addInternal(program)
+    }
+
+    private func addInternal(_ program: Program) {
         if program.size > 0 {
-            deduplicateTypeExtensions(in: program, deduplicationSet: &typeExtensionDeduplicationSet)
             prepareProgramForInclusion(program, index: totalEntryCounter)
             programs.append(program)
             ages.append(0)
@@ -108,32 +104,30 @@ public class BasicCorpus: ComponentBase, Collection, Corpus {
         return program
     }
 
+    public func allPrograms() -> [Program] {
+        return Array(programs)
+    }
+
     public func exportState() throws -> Data {
         let res = try encodeProtobufCorpus(programs)
         logger.info("Successfully serialized \(programs.count) programs")
         return res
     }
-    
+
     public func importState(_ buffer: Data) throws {
-        let newPrograms = try decodeProtobufCorpus(buffer)        
+        let newPrograms = try decodeProtobufCorpus(buffer)
         programs.removeAll()
         ages.removeAll()
-        for prog in newPrograms {
-            // Programs provided by a master instance in an initial sync must have ran successfully
-            add(prog, ProgramAspects(outcome: .succeeded))
-        }
+        newPrograms.forEach(addInternal)
     }
-    
+
     private func cleanup() {
-        // Reset deduplication set
-        typeExtensionDeduplicationSet = Set<TypeExtension>()
         var newPrograms = RingBuffer<Program>(maxSize: programs.maxSize)
         var newAges = RingBuffer<Int>(maxSize: ages.maxSize)
-        
+
         for i in 0..<programs.count {
             let remaining = programs.count - i
             if ages[i] < minMutationsPerSample || remaining <= (minSize - newPrograms.count) {
-                deduplicateTypeExtensions(in: programs[i], deduplicationSet: &typeExtensionDeduplicationSet)
                 newPrograms.append(programs[i])
                 newAges.append(ages[i])
             }

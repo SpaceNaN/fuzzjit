@@ -17,10 +17,10 @@ import Foundation
 // Event dispatching implementation.
 public class Event<T> {
     public typealias EventListener = (T) -> Void
-    
+
     /// The list of observers for this event.
     private(set) public var listeners = [EventListener]()
-    
+
     /// Registers an event listener for this event.
     public func addListener(_ listener: @escaping EventListener) {
         listeners.append(listener)
@@ -31,10 +31,10 @@ public class Event<T> {
 public class Events {
     /// Signals that the fuzzer is fully initialized.
     public let Initialized = Event<Void>()
-    
+
     /// Signals that a this instance is shutting down.
     public let Shutdown = Event<ShutdownReason>()
-    
+
     /// Signals that this instance has successfully shut down.
     /// Clients are expected to terminate the hosting process when handling this event.
     public let ShutdownComplete = Event<ShutdownReason>()
@@ -53,13 +53,13 @@ public class Events {
     public let InvalidProgramFound = Event<Program>()
 
     /// Signals that a crashing program has been found. Dispatched after the crashing program has been minimized.
-    public let CrashFound = Event<(program: Program, behaviour: CrashBehaviour, signal: Int, isUnique: Bool, origin: ProgramOrigin)>()
+    public let CrashFound = Event<(program: Program, behaviour: CrashBehaviour, isUnique: Bool, origin: ProgramOrigin)>()
 
     /// Signals that a program causing a timeout has been found.
     public let TimeOutFound = Event<Program>()
 
     /// Signals that a new interesting program has been found, after the program has been minimized.
-    public let InterestingProgramFound = Event<(program: Program, origin: ProgramOrigin, newTypeCollectionRun: Bool)>()
+    public let InterestingProgramFound = Event<(program: Program, origin: ProgramOrigin)>()
 
     /// Signals a diagnostics event
     public let DiagnosticsEvent = Event<(name: String, content: String)>()
@@ -75,6 +75,12 @@ public class Events {
 
     /// Signals that a worker has disconnected.
     public let WorkerDisconnected = Event<UUID>()
+}
+
+/// Crash behavior of a program.
+public enum CrashBehaviour: String {
+    case deterministic = "deterministic"
+    case flaky         = "flaky"
 }
 
 /// Reasons for shutting down a fuzzer instance.

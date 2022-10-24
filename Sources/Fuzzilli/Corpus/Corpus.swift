@@ -15,54 +15,36 @@
 import Foundation
 
 /// Protocol defining a Corpus for use in Fuzzilli
-/// It manages discovered programs, determines the next seed to target, 
+/// It manages discovered programs, determines the next seed to target,
 /// and provides programs to be used in the splice mutators
 
 public protocol Corpus : ComponentBase {
     var size: Int { get }
     var isEmpty: Bool { get }
 
+    /// Whether this corpus is able to export and restore its internal state.
+    /// Used mainly for worker synchronization.
+    var supportsFastStateSynchronization: Bool { get }
+
     /// Add new programs to the corpus, from various sources.
     func add(_ program: Program, _ aspects: ProgramAspects)
- 
+
     /// Returns a random element for use in a splicing
     func randomElementForSplicing() -> Program
 
     /// Returns the next program to be used as the basis of a mutation round
     func randomElementForMutating() -> Program
 
-    /// A corpus needs to be able to import/export its state. 
-    /// Currently, only the seed programs are handled, and corpus specific state is lost
+    /// All programs currently in the corpus
+    /// We could also consider making Corpus a Collection instead, but this seems easier for now.
+    func allPrograms() -> [Program]
+
+    /// A corpus that supports fast state transfer needs to implement these two methods.
     func exportState() throws -> Data
     func importState(_ buffer: Data) throws
 }
 
 extension Corpus {
-    public func makeSeedProgram() -> Program {
-        let b = fuzzer.makeBuilder()
-        b.loadInt(b.genInt())
-        b.loadInt(b.genInt())
-        b.loadBool(chooseUniform(from: [false,true]))
-        b.loadFloat(b.genFloat())
-        b.unary(chooseUniform(from: allUnaryOperators), b.randVar())
-        b.binary(b.randVar(), b.randVar(), with: chooseUniform(from: allBinaryOperators))
-        b.unary(chooseUniform(from: allUnaryOperators), b.randVar())
-        b.compare(b.randVar(), b.randVar(), with: chooseUniform(from: allComparators))
-        b.reassign(b.randVar(), to: b.randVar())
-        return b.finalize()
-    }
-
-    // A simplified version based on the FuzzEngine functionality
-    // Implemented here in order to obtain coverage data without dispatching the events for having
-    // found new coverage
-    func execAndEvalProg(_ program: Program) -> ProgramAspects? {
-        let execution = fuzzer.execute(program, withTimeout: fuzzer.config.timeout * 2)
-        if execution.outcome == .succeeded {
-            return fuzzer.evaluator.evaluate(execution)
-        }
-        return nil
-    }
-
     func prepareProgramForInclusion(_ program: Program, index: Int) {
         // Program ancestor chains only go up to the next corpus element
         program.clearParent()
@@ -75,22 +57,4 @@ extension Corpus {
             program.comments.add("Corpus entry #\(index) on instance \(fuzzer.id) with Corpus type \(name)", at: .header)
         }
     }
-
-    /// Change type extensions for cached ones to save memory
-    func deduplicateTypeExtensions(in program: Program, deduplicationSet: inout Set<TypeExtension>) {
-        var deduplicatedTypes = ProgramTypes()
-        for (variable, instrTypes) in program.types {
-            for typeInfo in instrTypes {
-                deduplicatedTypes.setType(
-                    of: variable,
-                    to: typeInfo.type.uniquified(with: &deduplicationSet),
-                    after: typeInfo.index,
-                    quality: typeInfo.quality
-                )
-            }
-        }
-        program.types = deduplicatedTypes
-    }
-
-
 }

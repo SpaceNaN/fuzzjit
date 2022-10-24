@@ -15,7 +15,9 @@
 import Fuzzilli
 
 let qjsProfile = Profile(
-    processArguments: ["--reprl"],
+    getProcessArguments: { (randomizingArguments: Bool) -> [String] in
+        return ["--reprl"]
+    },
 
     processEnv: ["UBSAN_OPTIONS": "handle_segv=0"],
 
@@ -33,7 +35,7 @@ let qjsProfile = Profile(
 
     crashTests: ["fuzzilli('FUZZILLI_CRASH', 0)", "fuzzilli('FUZZILLI_CRASH', 1)", "fuzzilli('FUZZILLI_CRASH', 2)"],
 
-    additionalCodeGenerators: WeightedList<CodeGenerator>([]),
+    additionalCodeGenerators: [],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([]),
 

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import Foundation
-import JS
 
 /// Supported versions of the ECMA standard.
 public enum ECMAScriptVersion {
@@ -30,11 +29,6 @@ public class JavaScriptLifter: Lifter {
 
     /// The inlining policy to follow. This influences the look of the emitted code.
     let policy: InliningPolicy
-
-    /// The inlining policy used for code emmited for type collection.
-    /// It should inline as little expressions as possible to capture as many variable types as possible.
-    /// But simple literal types can infer AbstractInterpreter as well.
-    let typeCollectionPolicy = InlineOnlyLiterals()
 
     /// The version of the ECMAScript standard that this lifter generates code for.
     let version: ECMAScriptVersion
@@ -53,32 +47,23 @@ public class JavaScriptLifter: Lifter {
     }
 
     public func lift(_ program: Program, withOptions options: LiftingOptions) -> String {
-        if options.contains(.collectTypes) {
-            return lift(program, withOptions: options, withPolicy: self.typeCollectionPolicy)
-        } else {
-            return lift(program, withOptions: options, withPolicy: self.policy)
-        }
-    }
-
-    private func lift(_ program: Program, withOptions options: LiftingOptions, withPolicy policy: InliningPolicy) -> String {
-        var w = ScriptWriter(minifyOutput: options.contains(.minify))
+        var w = ScriptWriter(stripComments: !options.contains(.includeComments), includeLineNumbers: options.contains(.includeLineNumbers))
 
         if options.contains(.includeComments), let header = program.comments.at(.header) {
             w.emitComment(header)
         }
 
-        var typeUpdates: [[(Variable, Type)]] = []
-        if options.contains(.dumpTypes) {
-            typeUpdates = program.types.indexedByInstruction(for: program)
-        }
-
         // Keeps track of which variables have been inlined
         var inlinedVars = VariableSet()
 
-        // Analyze the program to determine the uses of a variable
-        let analyzer = VariableAnalyzer(for: program)
-
-        let typeCollectionAnalyzer = TypeCollectionAnalyzer()
+        // Perform some analysis on the program, for example to determine variable uses
+        var needToSupportExploration = false
+        var analyzer = VariableAnalyzer(for: program)
+        for instr in program.code {
+            analyzer.analyze(instr)
+            if instr.op is Explore { needToSupportExploration = true }
+        }
+        analyzer.finishAnalysis()
 
         // Associates variables with the expressions that produce them
         var expressions = VariableMap<Expression>()
@@ -86,24 +71,15 @@ public class JavaScriptLifter: Lifter {
             return expressions[v] ?? Identifier.new(v.identifier)
         }
 
-        if options.contains(.collectTypes) {
-            // Wrap type collection to its own main function to avoid using global variables
-            w.emit("function typeCollectionMain() {")
-            w.increaseIndentionLevel()
-            w.emitBlock(helpersScript)
-            w.emitBlock(initTypeCollectionScript)
+        if needToSupportExploration {
+            w.emitBlock(JavaScriptExploreHelper.prefixCode)
         }
 
         w.emitBlock(prefix)
-        var returnArr = [(Int,Int)]()
-        var returnFlag = true
+
         let varDecl = version == .es6 ? "let" : "var"
         let constDecl = version == .es6 ? "const" : "var"
         func decl(_ v: Variable) -> String {
-            if returnFlag && (w.getCurrentIndention() == 0){
-                returnArr.append((Int,Int)(v.number,w.getCurrentIndention()))
-            }
-            returnFlag = true
             if analyzer.numAssignments(of: v) == 1 {
                 return "\(constDecl) \(v)"
             } else {
@@ -120,28 +96,73 @@ public class JavaScriptLifter: Lifter {
                 return expr(for: instr.input(idx))
             }
 
+            // Helper function to lift call arguments
+            func liftCallArguments(_ args: ArraySlice<Variable>, spreading spreads: [Bool] = []) -> String {
+                var arguments = [String]()
+                for (i, v) in args.enumerated() {
+                    if spreads.count > i && spreads[i] {
+                        arguments.append("...\(expr(for: v).text)")
+                    } else {
+                        arguments.append(expr(for: v).text)
+                    }
+                }
+                return arguments.joined(separator: ",")
+            }
+
+            // Helper function to lift destruct array operations
+            func liftArrayPattern(indices: [Int], outputs: [String], hasRestElement: Bool) -> String {
+                assert(indices.count == outputs.count)
+
+                var arrayPattern = ""
+                var lastIndex = 0
+                for (index, output) in zip(indices, outputs) {
+                    let skipped = index - lastIndex
+                    lastIndex = index
+                    let dots = index == indices.last! && hasRestElement ? "..." : ""
+                    arrayPattern += String(repeating: ",", count: skipped) + dots + output
+                }
+
+                return arrayPattern
+            }
+
+            func liftObjectDestructPattern(properties: [String], outputs: [String], hasRestElement: Bool) -> String {
+                assert(outputs.count == properties.count + (hasRestElement ? 1 : 0))
+
+                var objectPattern = ""
+                for (property, output) in zip(properties, outputs) {
+                    objectPattern += "\"\(property)\":\(output),"
+                }
+                if hasRestElement {
+                    objectPattern += "...\(outputs.last!)"
+                }
+
+                return objectPattern
+            }
+
             // Helper functions to lift a function definition
-            func liftFunctionDefinitionParameters(_ op: BeginAnyFunctionDefinition) -> String {
-                assert(instr.op === op)
-                var identifiers = instr.innerOutputs.map({ $0.identifier })
-                if op.hasRestParam, let last = instr.innerOutputs.last {
-                    identifiers[identifiers.endIndex - 1] = "..." + last.identifier
+            func liftParameters(_ parameters: Parameters, isMethod: Bool = false) -> String {
+                var innerOutputs = instr.innerOutputs
+                if isMethod {
+                    // First inner output is the implicit |this| parameter
+                    innerOutputs.removeFirst()
+                }
+                assert(parameters.count == innerOutputs.count)
+                var identifiers = innerOutputs.map({ $0.identifier })
+                if parameters.hasRestParameter {
+                    identifiers[identifiers.endIndex - 1] = "..." + instr.innerOutputs.last!.identifier
                 }
                 return identifiers.joined(separator: ",")
             }
-            // TODO remove copy+paste
-            func liftMethodDefinitionParameters(_ signature: FunctionSignature) -> String {
-                var identifiers = instr.innerOutputs(1...).map({ $0.identifier })
-                if signature.hasVarargsParameter(), let last = instr.innerOutputs.last {
-                    identifiers[identifiers.endIndex - 1] = "..." + last.identifier
-                }
-                return identifiers.joined(separator: ",")
-            }
-            func liftFunctionDefinitionBegin(_ op: BeginAnyFunctionDefinition, _ keyword: String) {
+            func liftFunctionDefinitionBegin(_ op: BeginAnyFunction, _ keyword: String) {
+                // Function are lifted as `function v3(v4, v5, v6) { ...`.
+                // This will set the .name of the function to the name of the variable, which is a property that the JavaScriptExploreHelper code relies on (see shouldTreatAsConstructor).
                 assert(instr.op === op)
-                let params = liftFunctionDefinitionParameters(op)
+                let params = liftParameters(op.parameters)
                 w.emit("\(keyword) \(instr.output)(\(params)) {")
                 w.increaseIndentionLevel()
+                if op.isStrict {
+                    w.emit("'use strict';")
+                }
             }
 
             if options.contains(.includeComments), let comment = program.comments.at(.instruction(instr.index)) {
@@ -152,15 +173,12 @@ public class JavaScriptLifter: Lifter {
 
             switch instr.op {
             case let op as LoadInteger:
-                returnFlag = false;
                 output = NumberLiteral.new(String(op.value))
 
             case let op as LoadBigInt:
-                returnFlag = false;
                 output = NumberLiteral.new(String(op.value) + "n")
 
             case let op as LoadFloat:
-                returnFlag = false;
                 if op.value.isNaN {
                     output = Identifier.new("NaN")
                 } else if op.value.isEqual(to: -Double.infinity) {
@@ -172,45 +190,47 @@ public class JavaScriptLifter: Lifter {
                 }
 
             case let op as LoadString:
-                returnFlag = false;
                 output = Literal.new() <> "\"" <> op.value <> "\""
 
             case let op as LoadRegExp:
-                returnFlag = false;
                 let flags = op.flags.asString()
-                output = Literal.new() <> "/" <> op.value <> "/" <> flags
+                output = RegExpLiteral.new() <> "/" <> op.value <> "/" <> flags
 
             case let op as LoadBoolean:
-                returnFlag = false;
                 output = Literal.new(op.value ? "true" : "false")
 
             case is LoadUndefined:
-                returnFlag = false;
                 output = Identifier.new("undefined")
 
             case is LoadNull:
-                returnFlag = false;
                 output = Literal.new("null")
 
+            case is LoadThis:
+                output = Literal.new("this")
+
+            case is LoadArguments:
+                output = Literal.new("arguments")
+
             case let op as CreateObject:
-                returnFlag = false;
                 var properties = [String]()
                 for (index, propertyName) in op.propertyNames.enumerated() {
-                    properties.append(propertyName + ":" + input(index))
+                    properties.append("\"" + propertyName + "\"" + ":" + input(index))
                 }
                 output = ObjectLiteral.new("{" + properties.joined(separator: ",") + "}")
 
             case is CreateArray:
                 // When creating arrays, treat undefined elements as holes. This also relies on literals always being inlined.
-                returnFlag = false;
-                let elems = instr.inputs.map({ let text = expr(for: $0).text; return text == "undefined" ? "" : text }).joined(separator: ",")
+                var elems = instr.inputs.map({ let text = expr(for: $0).text; return text == "undefined" ? "" : text }).joined(separator: ",")
+                if elems.last == "," || (instr.inputs.count==1 && elems=="") {
+                    // If the last element is supposed to be a hole, we need one additional comma
+                    elems += ","
+                }
                 output = ArrayLiteral.new("[" + elems + "]")
 
             case let op as CreateObjectWithSpread:
-                returnFlag = true;
                 var properties = [String]()
                 for (index, propertyName) in op.propertyNames.enumerated() {
-                    properties.append(propertyName + ":" + input(index))
+                    properties.append("\"" + propertyName + "\"" + ":" + input(index))
                 }
                 // Remaining ones are spread.
                 for v in instr.inputs.dropFirst(properties.count) {
@@ -219,185 +239,174 @@ public class JavaScriptLifter: Lifter {
                 output = ObjectLiteral.new("{" + properties.joined(separator: ",") + "}")
 
             case let op as CreateArrayWithSpread:
-                returnFlag = true;
                 var elems = [String]()
                 for (i, v) in instr.inputs.enumerated() {
                     if op.spreads[i] {
                         elems.append("..." + expr(for: v).text)
                     } else {
-                        elems.append(expr(for: v).text)
+                        let text = expr(for: v).text
+                        elems.append(text == "undefined" ? "" : text)
                     }
                 }
-                output = ArrayLiteral.new("[" + elems.joined(separator: ",") + "]")
+                var elemString = elems.joined(separator: ",");
+                if elemString.last == "," || (instr.inputs.count==1 && elemString=="") {
+                    // If the last element is supposed to be a hole, we need one additional commas
+                    elemString += ","
+                }
+                output = ArrayLiteral.new("[" + elemString + "]")
+
+            case let op as CreateTemplateString:
+                assert(!op.parts.isEmpty)
+                assert(op.parts.count == instr.numInputs + 1)
+                var parts = [op.parts[0]]
+                for i in 1..<op.parts.count {
+                    parts.append("${\(input(i - 1))}\(op.parts[i])")
+                }
+                // See BeginCodeString case.
+                let count = Int(pow(2, Double(codeStringNestingLevel)))-1
+                let escapeSequence = String(repeating: "\\", count: count)
+                output = Literal.new("\(escapeSequence)`" + parts.joined() + "\(escapeSequence)`")
 
             case let op as LoadBuiltin:
-                returnFlag = false;
                 output = Identifier.new(op.builtinName)
 
             case let op as LoadProperty:
-                returnFlag = true;
                 output = MemberExpression.new() <> input(0) <> "." <> op.propertyName
 
             case let op as StoreProperty:
-                returnFlag = true;
-                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let dest = MemberExpression.new() <> input(0) <> "." <> op.propertyName
                 let expr = AssignmentExpression.new() <> dest <> " = " <> input(1)
                 w.emit(expr)
 
-            case let op as DeleteProperty:
-                returnFlag = true;
-                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
-                let target = MemberExpression.new() <> input(0) <> "." <> op.propertyName
-                let expr = UnaryExpression.new() <> "delete " <> target
+            case let op as StorePropertyWithBinop:
+                let dest = MemberExpression.new() <> input(0) <> "." <> op.propertyName
+                let expr = AssignmentExpression.new() <> dest <> " \(op.op.token)= " <> input(1)
                 w.emit(expr)
 
+            case let op as DeleteProperty:
+                let target = MemberExpression.new() <> input(0) <> "." <> op.propertyName
+                output = UnaryExpression.new() <> "delete " <> target
+
             case let op as LoadElement:
-                returnFlag = true;
                 output = MemberExpression.new() <> input(0) <> "[" <> op.index <> "]"
 
             case let op as StoreElement:
-                returnFlag = true;
-                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let dest = MemberExpression.new() <> input(0) <> "[" <> op.index <> "]"
                 let expr = AssignmentExpression.new() <> dest <> " = " <> input(1)
                 w.emit(expr)
 
-            case let op as DeleteElement:
-                returnFlag = true;
-                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
-                let target = MemberExpression.new() <> input(0) <> "[" <> op.index <> "]"
-                let expr = UnaryExpression.new() <> "delete " <> target
+            case let op as StoreElementWithBinop:
+                let dest = MemberExpression.new() <> input(0) <> "[" <> op.index <> "]"
+                let expr = AssignmentExpression.new() <> dest <> " \(op.op.token)= " <> input(1)
                 w.emit(expr)
 
+            case let op as DeleteElement:
+                let target = MemberExpression.new() <> input(0) <> "[" <> op.index <> "]"
+                output = UnaryExpression.new() <> "delete " <> target
+
             case is LoadComputedProperty:
-                returnFlag = true;
                 output = MemberExpression.new() <> input(0) <> "[" <> input(1).text <> "]"
 
             case is StoreComputedProperty:
-                returnFlag = true;
-                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let dest = MemberExpression.new() <> input(0) <> "[" <> input(1).text <> "]"
                 let expr = AssignmentExpression.new() <> dest <> " = " <> input(2)
                 w.emit(expr)
 
-            case is DeleteComputedProperty:
-                returnFlag = true;
-                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
-                let target = MemberExpression.new() <> input(0) <> "[" <> input(1).text <> "]"
-                let expr = UnaryExpression.new() <> "delete " <> target
+            case let op as StoreComputedPropertyWithBinop:
+                let dest = MemberExpression.new() <> input(0) <> "[" <> input(1).text <> "]"
+                let expr = AssignmentExpression.new() <> dest <> " \(op.op.token)= " <> input(2)
                 w.emit(expr)
 
+            case is DeleteComputedProperty:
+                let target = MemberExpression.new() <> input(0) <> "[" <> input(1).text <> "]"
+                output = UnaryExpression.new() <> "delete " <> target
+
             case is TypeOf:
-                returnFlag = false;
                 output = UnaryExpression.new() <> "typeof " <> input(0)
 
-            case is InstanceOf:
-                returnFlag = true;
+            case is TestInstanceOf:
                 output = BinaryExpression.new() <> input(0) <> " instanceof " <> input(1)
 
-            case is In:
-                returnFlag = true;
+            case is TestIn:
                 output = BinaryExpression.new() <> input(0) <> " in " <> input(1)
 
-            case let op as BeginPlainFunctionDefinition:
-                returnFlag = false;
+            case let op as BeginPlainFunction:
                 liftFunctionDefinitionBegin(op, "function")
 
-            case let op as BeginStrictFunctionDefinition:
-                returnFlag = false;
-                liftFunctionDefinitionBegin(op, "function")
-                w.emit("'use strict';")
-
-            case let op as BeginArrowFunctionDefinition:
-                returnFlag = false;
-                let params = liftFunctionDefinitionParameters(op)
+            case let op as BeginArrowFunction:
+                let params = liftParameters(op.parameters)
                 w.emit("\(decl(instr.output)) = (\(params)) => {")
                 w.increaseIndentionLevel()
+                if op.isStrict {
+                    w.emit("'use strict';")
+                }
 
-            case let op as BeginGeneratorFunctionDefinition:
-                returnFlag = false;
+            case let op as BeginGeneratorFunction:
                 liftFunctionDefinitionBegin(op, "function*")
 
-            case let op as BeginAsyncFunctionDefinition:
-                returnFlag = false;
+            case let op as BeginAsyncFunction:
                 liftFunctionDefinitionBegin(op, "async function")
 
-            case let op as BeginAsyncArrowFunctionDefinition:
-                returnFlag = false;
-                let params = liftFunctionDefinitionParameters(op)
+            case let op as BeginAsyncArrowFunction:
+                let params = liftParameters(op.parameters)
                 w.emit("\(decl(instr.output)) = async (\(params)) => {")
                 w.increaseIndentionLevel()
+                if op.isStrict {
+                    w.emit("'use strict';")
+                }
 
-            case let op as BeginAsyncGeneratorFunctionDefinition:
-                returnFlag = false;
+            case let op as BeginAsyncGeneratorFunction:
                 liftFunctionDefinitionBegin(op, "async function*")
 
-            case is EndArrowFunctionDefinition, is EndAsyncArrowFunctionDefinition:
-                returnFlag = false;
+            case is EndArrowFunction, is EndAsyncArrowFunction:
                 w.decreaseIndentionLevel()
                 w.emit("};")
 
-            case is EndAnyFunctionDefinition:
-                returnFlag = false;
+            case is EndAnyFunction:
                 w.decreaseIndentionLevel()
                 w.emit("}")
 
             case is Return:
-                returnFlag = false;
                 w.emit("return \(input(0));")
 
             case is Yield:
-                returnFlag = false;
-                w.emit("yield \(input(0));")
+                output = YieldExpression.new() <> "yield " <> input(0)
 
             case is YieldEach:
-                returnFlag = false;
                 w.emit("yield* \(input(0));")
 
             case is Await:
-                returnFlag = false;
                 output = UnaryExpression.new() <> "await " <> input(0)
 
-            case is ConditionalOperation:
-                output = TernaryExpression.new() <> input(0) <> " ? " <> input(1) <> " : " <> input(2)
-
             case is CallFunction:
-                returnFlag = true;
-                let arguments = instr.inputs.dropFirst().map({ expr(for: $0).text })
-                output = CallExpression.new() <> input(0) <> "(" <> arguments.joined(separator: ",") <> ")"
-
-            case let op as CallMethod:
-                returnFlag = true;
-                let arguments = instr.inputs.dropFirst().map({ expr(for: $0).text })
-                let method = MemberExpression.new() <> input(0) <> "." <> op.methodName
-                output = CallExpression.new() <> method <> "(" <> arguments.joined(separator: ",") <> ")"
-
-            case is CallComputedMethod:
-                returnFlag = true;
-                let arguments = instr.inputs.dropFirst(2).map({ expr(for: $0).text })
-                let method = MemberExpression.new() <> input(0) <> "[" <> input(1) <> "]"
-                output = CallExpression.new() <> method <> "(" <> arguments.joined(separator: ",") <> ")"
-
-            case is Construct:
-                returnFlag = false;
-                let arguments = instr.inputs.dropFirst().map({ expr(for: $0).text })
-                output = NewExpression.new() <> "new " <> input(0) <> "(" <> arguments.joined(separator: ",") <> ")"
+                output = CallExpression.new() <> input(0) <> "(" <> liftCallArguments(instr.variadicInputs) <> ")"
 
             case let op as CallFunctionWithSpread:
-                returnFlag = true;
-                var arguments = [String]()
-                for (i, v) in instr.inputs.dropFirst().enumerated() {
-                    if op.spreads[i] {
-                        arguments.append("..." + expr(for: v).text)
-                    } else {
-                        arguments.append(expr(for: v).text)
-                    }
-                }
-                output = CallExpression.new() <> input(0) <> "(" <> arguments.joined(separator: ",") <> ")"
+                output = CallExpression.new() <> input(0) <> "(" <> liftCallArguments(instr.variadicInputs, spreading: op.spreads) <> ")"
+
+            case is Construct:
+                output = NewExpression.new() <> "new " <> input(0) <> "(" <> liftCallArguments(instr.variadicInputs) <> ")"
+
+            case let op as ConstructWithSpread:
+                output = NewExpression.new() <> "new " <> input(0) <> "(" <> liftCallArguments(instr.variadicInputs, spreading: op.spreads) <> ")"
+
+            case let op as CallMethod:
+                let method = MemberExpression.new() <> input(0) <> "." <> op.methodName
+                output = CallExpression.new() <> method <> "(" <> liftCallArguments(instr.variadicInputs) <> ")"
+
+            case let op as CallMethodWithSpread:
+                let method = MemberExpression.new() <> input(0) <> "." <> op.methodName
+                output = CallExpression.new() <> method <> "(" <> liftCallArguments(instr.variadicInputs, spreading: op.spreads) <> ")"
+
+            case is CallComputedMethod:
+                let method = MemberExpression.new() <> input(0) <> "[" <> input(1) <> "]"
+                output = CallExpression.new() <> method <> "(" <> liftCallArguments(instr.variadicInputs) <> ")"
+
+            case let op as CallComputedMethodWithSpread:
+                let method = MemberExpression.new() <> input(0) <> "[" <> input(1) <> "]"
+                output = CallExpression.new() <> method <> "(" <> liftCallArguments(instr.variadicInputs, spreading: op.spreads) <> ")"
 
             case let op as UnaryOperation:
-                returnFlag = true;
                 if op.op.isPostfix {
                     output = UnaryExpression.new() <> input(0) <> op.op.token
                 } else {
@@ -405,25 +414,42 @@ public class JavaScriptLifter: Lifter {
                 }
 
             case let op as BinaryOperation:
-                returnFlag = true;
                 output = BinaryExpression.new() <> input(0) <> " " <> op.op.token <> " " <> input(1)
 
+            case let op as ReassignWithBinop:
+                let expr = AssignmentExpression.new() <> input(0) <> " \(op.op.token)= " <> input(1)
+                w.emit(expr)
+
             case is Dup:
-                returnFlag = true;
                 w.emit("\(decl(instr.output)) = \(input(0));")
 
             case is Reassign:
-                returnFlag = true;
-//                reassign based on assigned var
-                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
-                w.emit("\(instr.input(0)) = \(input(1));")
+                let expr = AssignmentExpression.new() <> input(0) <> " = " <> input(1)
+                w.emit(expr)
+
+            case let op as DestructArray:
+                let outputs = instr.outputs.map({ $0.identifier })
+                w.emit("\(varDecl) [\(liftArrayPattern(indices: op.indices, outputs: outputs, hasRestElement: op.hasRestElement))] = \(input(0));")
+
+            case let op as DestructArrayAndReassign:
+                let outputs = instr.inputs.dropFirst().map({ $0.identifier })
+                w.emit("[\(liftArrayPattern(indices: op.indices, outputs: outputs, hasRestElement: op.hasRestElement))] = \(input(0));")
+
+            case let op as DestructObject:
+                let outputs = instr.outputs.map({ $0.identifier })
+                w.emit("\(varDecl) {\(liftObjectDestructPattern(properties: op.properties, outputs: outputs, hasRestElement: op.hasRestElement))} = \(input(0));")
+
+            case let op as DestructObjectAndReassign:
+                let outputs = instr.inputs.dropFirst().map({ $0.identifier })
+                w.emit("({\(liftObjectDestructPattern(properties: op.properties, outputs: outputs, hasRestElement: op.hasRestElement))} = \(input(0)));")
 
             case let op as Compare:
-                returnFlag = true;
                 output = BinaryExpression.new() <> input(0) <> " " <> op.op.token <> " " <> input(1)
 
+            case is ConditionalOperation:
+                output = TernaryExpression.new() <> input(0) <> " ? " <> input(1) <> " : " <> input(2)
+
             case let op as Eval:
-                returnFlag = false;
                 // Woraround until Strings implement the CVarArg protocol in the linux Foundation library...
                 // TODO can make this permanent, but then use different placeholder pattern
                 var string = op.code
@@ -433,30 +459,29 @@ public class JavaScriptLifter: Lifter {
                 }
                 w.emit(string + ";")
 
+            case let op as Explore:
+                let arguments = instr.inputs.suffix(from: 1).map({ expr(for: $0).text }).joined(separator: ",")
+                w.emit("\(JavaScriptExploreHelper.exploreFunc)(\"\(op.id)\", \(input(0)), this, [\(arguments)]);")
+
             case is BeginWith:
-                returnFlag = false;
                 w.emit("with (\(input(0))) {")
                 w.increaseIndentionLevel()
 
             case is EndWith:
-                returnFlag = false;
                 w.decreaseIndentionLevel()
                 w.emit("}")
 
             case let op as LoadFromScope:
-                returnFlag = true;
                 output = Identifier.new(op.id)
 
             case let op as StoreToScope:
-                returnFlag = true;
                 w.emit("\(op.id) = \(input(0));")
 
             case is Nop:
-                returnFlag = false;
                 break
 
-            case let op as BeginClassDefinition:
-                returnFlag = false;
+            case let op as BeginClass:
+                // The name of the class is set to the uppercased variable name. This ensures that the heuristics used by the JavaScriptExploreHelper code to detect constructors works correctly (see shouldTreatAsConstructor).
                 var declaration = "\(decl(instr.output)) = class \(instr.output.identifier.uppercased())"
                 if op.hasSuperclass {
                     declaration += " extends \(input(0))"
@@ -470,12 +495,11 @@ public class JavaScriptLifter: Lifter {
                 // The following code is the body of the constructor, so emit the declaration
                 // First inner output is implicit |this| parameter
                 expressions[instr.innerOutput(0)] = Identifier.new("this")
-                let params = liftMethodDefinitionParameters(classDefinitions.current.constructorSignature)
+                let params = liftParameters(op.constructorParameters, isMethod: true)
                 w.emit("constructor(\(params)) {")
                 w.increaseIndentionLevel()
 
-            case is BeginMethodDefinition:
-                returnFlag = false;
+            case is BeginMethod:
                 // End the previous body (constructor or method)
                 w.decreaseIndentionLevel()
                 w.emit("}")
@@ -483,12 +507,11 @@ public class JavaScriptLifter: Lifter {
                 // First inner output is implicit |this| parameter
                 expressions[instr.innerOutput(0)] = Identifier.new("this")
                 let method = classDefinitions.current.nextMethod()
-                let params = liftMethodDefinitionParameters(method.signature)
+                let params = liftParameters(method.parameters, isMethod: true)
                 w.emit("\(method.name)(\(params)) {")
                 w.increaseIndentionLevel()
 
-            case is EndClassDefinition:
-                returnFlag = false;
+            case is EndClass:
                 // End the previous body (constructor or method)
                 w.decreaseIndentionLevel()
                 w.emit("}")
@@ -500,66 +523,78 @@ public class JavaScriptLifter: Lifter {
                 w.emit("};")
 
             case is CallSuperConstructor:
-                returnFlag = false;
-                let arguments = instr.inputs.map({ expr(for: $0).text })
-                w.emit(CallExpression.new() <> "super(" <> arguments.joined(separator: ",") <> ")")
+                w.emit(CallExpression.new() <> "super(" <> liftCallArguments(instr.variadicInputs) <> ")")
 
             case let op as CallSuperMethod:
-                returnFlag = true;
-                let arguments = instr.inputs.map({ expr(for: $0).text })
-                output = CallExpression.new() <> "super.\(op.methodName)(" <> arguments.joined(separator: ",") <> ")"
+                output = CallExpression.new() <> "super.\(op.methodName)(" <> liftCallArguments(instr.variadicInputs)  <> ")"
 
             case let op as LoadSuperProperty:
-                returnFlag = true;
                 output = MemberExpression.new() <> "super.\(op.propertyName)"
 
             case let op as StoreSuperProperty:
-                returnFlag = true;
                 let expr = AssignmentExpression.new() <> "super.\(op.propertyName) = " <> input(0)
                 w.emit(expr)
 
+            case let op as StoreSuperPropertyWithBinop:
+                let expr = AssignmentExpression.new() <> "super.\(op.propertyName) \(op.op.token)= " <> input(0)
+                w.emit(expr)
+
             case is BeginIf:
-                returnFlag = false;
-                w.emit("if (opt_param) {")
+                w.emit("if (\(input(0))) {")
                 w.increaseIndentionLevel()
 
             case is BeginElse:
-                returnFlag = false;
                 w.decreaseIndentionLevel()
                 w.emit("} else {")
                 w.increaseIndentionLevel()
 
             case is EndIf:
-                returnFlag = false;
                 w.decreaseIndentionLevel()
                 w.emit("}")
 
-            case let op as BeginWhile:
-                returnFlag = false;
+            case is BeginSwitch:
+                w.emit("switch (\(input(0))) {")
+                w.increaseIndentionLevel()
+
+            case is BeginSwitchCase:
+                w.emit("case \(input(0)):")
+                w.increaseIndentionLevel()
+
+            case is BeginSwitchDefaultCase:
+                w.emit("default:")
+                w.increaseIndentionLevel()
+
+            case let op as EndSwitchCase:
+                if !op.fallsThrough {
+                    w.emit("break;")
+                }
+                w.decreaseIndentionLevel()
+
+            case is EndSwitch:
+                w.decreaseIndentionLevel()
+                w.emit("}")
+
+            case let op as BeginWhileLoop:
                 let cond = BinaryExpression.new() <> input(0) <> " " <> op.comparator.token <> " " <> input(1)
                 w.emit("while (\(cond)) {")
                 w.increaseIndentionLevel()
 
-            case is EndWhile:
-                returnFlag = false;
+            case is EndWhileLoop:
                 w.decreaseIndentionLevel()
                 w.emit("}")
 
-            case is BeginDoWhile:
-                returnFlag = false;
+            case is BeginDoWhileLoop:
                 w.emit("do {")
                 w.increaseIndentionLevel()
 
-            case is EndDoWhile:
-                returnFlag = false;
+            case is EndDoWhileLoop:
                 w.decreaseIndentionLevel()
                 let begin = Block(endedBy: instr, in: program.code).begin
-                let comparator = (begin.op as! BeginDoWhile).comparator
+                let comparator = (begin.op as! BeginDoWhileLoop).comparator
                 let cond = BinaryExpression.new() <> expr(for: begin.input(0)) <> " " <> comparator.token <> " " <> expr(for: begin.input(1))
                 w.emit("} while (\(cond));")
 
-            case let op as BeginFor:
-                returnFlag = false;
+            case let op as BeginForLoop:
                 let loopVar = Identifier.new(instr.innerOutput.identifier)
                 let cond = BinaryExpression.new() <> loopVar <> " " <> op.comparator.token <> " " <> input(1)
                 var expr: Expression
@@ -575,67 +610,60 @@ public class JavaScriptLifter: Lifter {
                 w.emit("for (\(varDecl) \(loopVar) = \(input(0)); \(cond); \(expr)) {")
                 w.increaseIndentionLevel()
 
-            case is EndFor:
-                returnFlag = false;
+            case is EndForLoop:
                 w.decreaseIndentionLevel()
                 w.emit("}")
 
-            case is BeginForIn:
-                returnFlag = false;
+            case is BeginForInLoop:
                 w.emit("for (\(decl(instr.innerOutput)) in \(input(0))) {")
                 w.increaseIndentionLevel()
 
-            case is EndForIn:
-                returnFlag = false;
+            case is EndForInLoop:
                 w.decreaseIndentionLevel()
                 w.emit("}")
 
-            case is BeginForOf:
-                returnFlag = false;
+            case is BeginForOfLoop:
                 w.emit("for (\(decl(instr.innerOutput)) of \(input(0))) {")
                 w.increaseIndentionLevel()
 
-            case is EndForOf:
-                returnFlag = false;
+            case let op as BeginForOfWithDestructLoop:
+                let outputs = instr.innerOutputs.map({ $0.identifier })
+                w.emit("for (\(varDecl) [\(liftArrayPattern(indices: op.indices, outputs: outputs, hasRestElement: op.hasRestElement))] of \(input(0))) {")
+                w.increaseIndentionLevel()
+
+            case is EndForOfLoop:
                 w.decreaseIndentionLevel()
                 w.emit("}")
 
-            case is Break:
-                returnFlag = false;
+            case is LoopBreak,
+                is SwitchBreak:
                 w.emit("break;")
 
-            case is Continue:
-                returnFlag = false;
+            case is LoopContinue:
                 w.emit("continue;")
 
             case is BeginTry:
-                returnFlag = false;
                 w.emit("try {")
                 w.increaseIndentionLevel()
 
             case is BeginCatch:
-                returnFlag = false;
                 w.decreaseIndentionLevel()
                 w.emit("} catch(\(instr.innerOutput)) {")
                 w.increaseIndentionLevel()
 
             case is BeginFinally:
-                returnFlag = false;
                 w.decreaseIndentionLevel()
                 w.emit("} finally {")
                 w.increaseIndentionLevel()
 
-            case is EndTryCatch:
-                returnFlag = false;
+            case is EndTryCatchFinally:
                 w.decreaseIndentionLevel()
                 w.emit("}")
 
             case is ThrowException:
-                returnFlag = false;
                 w.emit("throw \(input(0));")
 
             case is BeginCodeString:
-                returnFlag = false;
                 // This power series (2**n -1) is used to generate a valid escape sequence for nested template literals.
                 // Here n represents the nesting level.
                 let count = Int(pow(2, Double(codeStringNestingLevel)))-1
@@ -645,8 +673,6 @@ public class JavaScriptLifter: Lifter {
                 codeStringNestingLevel += 1
 
             case is EndCodeString:
-                returnFlag = false;
-                w.emit("\(input(0));")
                 codeStringNestingLevel -= 1
                 w.decreaseIndentionLevel()
                 let count = Int(pow(2, Double(codeStringNestingLevel)))-1
@@ -654,17 +680,14 @@ public class JavaScriptLifter: Lifter {
                 w.emit("\(escapeSequence)`;")
 
             case is BeginBlockStatement:
-                returnFlag = false;
                 w.emit("{")
                 w.increaseIndentionLevel()
 
             case is EndBlockStatement:
-                returnFlag = false;
                 w.decreaseIndentionLevel()
                 w.emit("}")
 
             case is Print:
-                returnFlag = false;
                 w.emit("fuzzilli('FUZZILLI_PRINT', \(input(0)));")
 
             default:
@@ -673,6 +696,7 @@ public class JavaScriptLifter: Lifter {
 
             if let expression = output {
                 let v = instr.output
+
                 if policy.shouldInline(expression) && analyzer.numAssignments(of: v) == 1 && expression.canInline(instr, analyzer.usesIndices(of: v)) {
                     expressions[v] = expression
                     inlinedVars.insert(v)
@@ -680,34 +704,12 @@ public class JavaScriptLifter: Lifter {
                     w.emit("\(decl(v)) = \(expression);")
                 }
             }
-
-            if options.contains(.dumpTypes) {
-                for (v, t) in typeUpdates[instr.index] where !inlinedVars.contains(v) {
-                    w.emitComment("\(v) = \(t.abbreviated)")
-                }
-            }
-
-            if options.contains(.collectTypes) {
-                // Update type of every variable returned by analyzer
-                for v in typeCollectionAnalyzer.analyze(instr) where !inlinedVars.contains(v) {
-                    w.emit("updateType(\(v.number), \(instr.index), \(expr(for: v)));")
-                }
-            }
         }
 
-        if returnArr.count != 0 && (w.getCurrentIndention() == 0) {
-            // for item in returnArr{
-            //    w.emitComment(" v\(item.0) : \(item.1)")
-            // }
-            w.emit("return v\(returnArr[returnArr.count-1].0);")
-        }
         w.emitBlock(suffix)
 
-        if options.contains(.collectTypes) {
-            w.emitBlock(printTypesScript)
-            w.decreaseIndentionLevel()
-            w.emit("}")
-            w.emit("typeCollectionMain()")
+        if needToSupportExploration {
+            w.emitBlock(JavaScriptExploreHelper.suffixCode)
         }
 
         if options.contains(.includeComments), let footer = program.comments.at(.footer) {

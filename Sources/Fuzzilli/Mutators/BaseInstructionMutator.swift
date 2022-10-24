@@ -18,48 +18,48 @@ public class BaseInstructionMutator: Mutator {
     public init(maxSimultaneousMutations: Int = 1) {
         self.maxSimultaneousMutations = maxSimultaneousMutations
     }
-    
-    override func mutate(_ program: Program, using b: ProgramBuilder) -> Program? {
+
+    override func mutate(_ program: Program, using b: ProgramBuilder, for fuzzer: Fuzzer) -> Program? {
         beginMutation(of: program)
-        
+
         var candidates = [Int]()
         for instr in program.code {
             if canMutate(instr) {
                 candidates.append(instr.index)
             }
         }
-        
+
         guard candidates.count > 0 else {
             return nil
         }
-        
+
         var toMutate = Set<Int>()
         for _ in 0..<Int.random(in: 1...maxSimultaneousMutations) {
             toMutate.insert(chooseUniform(from: candidates))
         }
-        
+
         b.adopting(from: program) {
             for instr in program.code {
                 if toMutate.contains(instr.index) {
                     mutate(instr, b)
                 } else {
-                    b.adopt(instr, keepTypes: true)
+                    b.adopt(instr)
                 }
             }
         }
-        
+
         return b.finalize()
     }
-    
+
     /// Can be overwritten by child classes.
     public func beginMutation(of program: Program) {}
-    
+
     /// Overridden by child classes.
     /// Determines the set of instructions that can be mutated by this mutator
     public func canMutate(_ instr: Instruction) -> Bool {
         fatalError("This method must be overridden")
     }
-    
+
     /// Overridden by child classes.
     /// Mutate a single statement
     public func mutate(_ instr: Instruction, _ builder: ProgramBuilder) {

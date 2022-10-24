@@ -21,26 +21,20 @@ import Foundation
 /// * Variables have increasing numbers starting at zero and there are no holes
 /// * Variables are only used while they are visible (the block they were defined in is still active)
 /// * Blocks are balanced and the opening and closing operations match (e.g. BeginIf is closed by EndIf)
-/// * An instruction always produces a new output variable
+/// * The outputs of an instruction are always new variables and never overwrite an existing variable
 ///
 public final class Program {
     /// The immutable code of this program.
     public let code: Code
-    
+
     /// The parent program that was used to construct this program.
     /// This is mostly only used when inspection mode is enabled to reconstruct
     /// the "history" of a program.
     public private(set) var parent: Program? = nil
-    
+
     /// Comments attached to this program
     public var comments = ProgramComments()
 
-    /// Current type information combined from available sources
-    public var types = ProgramTypes()
-
-    /// Result of runtime type collection execution, by default there was none.
-    public var typeCollectionStatus = TypeCollectionStatus.notAttempted
-    
     /// Each program has a unique ID to identify it even accross different fuzzer instances.
     public private(set) lazy var id = UUID()
 
@@ -57,19 +51,10 @@ public final class Program {
     }
 
     /// Construct a program with the given code and type information.
-    public convenience init(code: Code, parent: Program? = nil, types: ProgramTypes = ProgramTypes(), comments: ProgramComments = ProgramComments()) {
+    public convenience init(code: Code, parent: Program? = nil, comments: ProgramComments = ProgramComments()) {
         self.init(with: code)
-        self.types = types
         self.comments = comments
         self.parent = parent
-    }
-
-    public func type(of variable: Variable, after instrIndex: Int) -> Type {
-        return types.getType(of: variable, after: instrIndex)
-    }
-
-    public func type(of variable: Variable, before instrIndex: Int) -> Type {
-        return types.getType(of: variable, after: instrIndex - 1)
     }
 
     /// The number of instructions in this program.
@@ -82,10 +67,6 @@ public final class Program {
         return size == 0
     }
 
-    public var hasTypeInformation: Bool {
-        return !types.isEmpty
-    }
-    
     public func clearParent() {
         parent = nil
     }
@@ -104,8 +85,6 @@ extension Program: ProtobufConvertible {
         return ProtobufType.with {
             $0.uuid = id.uuidData
             $0.code = code.map({ $0.asProtobuf(with: opCache) })
-            $0.types = types.asProtobuf(with: typeCache)
-            $0.typeCollectionStatus = Fuzzilli_Protobuf_TypeCollectionStatus(rawValue: Int(typeCollectionStatus.rawValue))!
 
             if !comments.isEmpty {
                 $0.comments = comments.asProtobuf()
@@ -120,7 +99,7 @@ extension Program: ProtobufConvertible {
     public func asProtobuf() -> ProtobufType {
         return asProtobuf(opCache: nil, typeCache: nil)
     }
-    
+
     convenience init(from proto: ProtobufType, opCache: OperationCache? = nil, typeCache: TypeCache? = nil) throws {
         var code = Code()
         for (i, protoInstr) in proto.code.enumerated() {
@@ -137,13 +116,7 @@ extension Program: ProtobufConvertible {
             throw FuzzilliError.programDecodingError("decoded code is not statically valid: \(reason)")
         }
 
-        do {
-            self.init(code: code, types: try ProgramTypes(from: proto.types, with: typeCache))
-        } catch FuzzilliError.typeDecodingError(let reason) {
-            throw FuzzilliError.programDecodingError("could not decode type information: \(reason)")
-        }
-
-        self.typeCollectionStatus = TypeCollectionStatus(rawValue: UInt8(proto.typeCollectionStatus.rawValue)) ?? .notAttempted
+        self.init(code: code)
 
         if let uuid = UUID(uuidData: proto.uuid) {
             self.id = uuid
@@ -155,7 +128,7 @@ extension Program: ProtobufConvertible {
             self.parent = try Program(from: proto.parent, opCache: opCache, typeCache: typeCache)
         }
     }
-    
+
     public convenience init(from proto: ProtobufType) throws {
         try self.init(from: proto, opCache: nil, typeCache: nil)
     }

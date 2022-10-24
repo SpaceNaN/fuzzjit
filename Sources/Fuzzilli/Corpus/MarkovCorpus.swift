@@ -1,6 +1,6 @@
 import Foundation
 
-/// Corpus & Scheduler based on 
+/// Corpus & Scheduler based on
 /// Coverage-based Greybox Fuzzing as Markov Chain paper
 /// https://mboehme.github.io/paper/TSE18.pdf
 /// Simply put, the corpus keeps track of which paths have been found, and prioritizes seeds
@@ -16,8 +16,7 @@ import Foundation
 ///     prioritize faster samples
 
 public class MarkovCorpus: ComponentBase, Corpus {
-
-    // All programs currently in the corpus
+    // All programs that were added to the corpus so far
     private var allIncludedPrograms: [Program] = []
     // Queue of programs to be executed next, all of which hit a rare edge
     private var programExecutionQueue: [Program] = []
@@ -48,9 +47,6 @@ public class MarkovCorpus: ComponentBase, Corpus {
     // edge hits in each round, before dropout is applied
     private let desiredSelectionProportion = 8
 
-    /// Corpus deduplicates the runtime types of its programs to conserve memory.
-    private var typeExtensionDeduplicationSet = Set<TypeExtension>()
-
     public init(covEvaluator: ProgramCoverageEvaluator, dropoutRate: Double) {
         self.dropoutRate = dropoutRate
         covEvaluator.enableEdgeTracking()
@@ -61,12 +57,6 @@ public class MarkovCorpus: ComponentBase, Corpus {
 
     override func initialize() {
         assert(covEvaluator === fuzzer.evaluator as! ProgramCoverageEvaluator)
-        currentProg = makeSeedProgram()
-        guard let aspects = execAndEvalProg(currentProg) else {
-            logger.fatal("Did not receive usable aspects for seed program")
-        }
-        add(currentProg, aspects)
-        assert(size > 0)
     }
 
     public func add(_ program: Program, _ aspects: ProgramAspects) {
@@ -77,14 +67,12 @@ public class MarkovCorpus: ComponentBase, Corpus {
         }
 
         prepareProgramForInclusion(program, index: self.size)
-        deduplicateTypeExtensions(in: program, deduplicationSet: &typeExtensionDeduplicationSet)
 
         allIncludedPrograms.append(program)
-        for e in origCov.toEdges() {
+        for e in origCov.getEdges() {
             edgeMap[e] = program
         }
     }
-
 
     /// Split evenly between programs in the current queue and all programs available to the corpus
     public func randomElementForSplicing() -> Program {
@@ -101,7 +89,7 @@ public class MarkovCorpus: ComponentBase, Corpus {
     public func randomElementForMutating() -> Program {
         totalExecs += 1
         // Only do computationally expensive work choosing the next program when there is a solid
-        // baseline of execution data. The data tracked in the statistics module is not used, as modules are intended 
+        // baseline of execution data. The data tracked in the statistics module is not used, as modules are intended
         // to not be required for the fuzzer to function.
         if totalExecs > 250 {
             // Check if more programs are needed
@@ -124,7 +112,7 @@ public class MarkovCorpus: ComponentBase, Corpus {
         if programExecutionQueue.count != 0 {
             logger.fatal("Attempted to generate execution list while it still has programs")
         }
-        let edgeCounts = covEvaluator.getEdgeCounts()
+        let edgeCounts = covEvaluator.getEdgeHitCounts()
         let edgeCountsSorted = edgeCounts.sorted()
 
         // Find the edge with the smallest count
@@ -138,7 +126,7 @@ public class MarkovCorpus: ComponentBase, Corpus {
         if startIndex == -1 {
             logger.fatal("No edges found in edge count")
         }
-        
+
         // Find the nth interesting edge's count
         let desiredEdgeCount = max(size / desiredSelectionProportion, 30)
         let endIndex = min(startIndex + desiredEdgeCount, edgeCountsSorted.count - 1)
@@ -149,44 +137,42 @@ public class MarkovCorpus: ComponentBase, Corpus {
             // Applies dropout on otherwise valid samples, to ensure variety between instances
             // This will likely select some samples multiple times, which is acceptable as
             // it is proportional to how many infrquently hit edges the sample has
-            if val != 0 && val <= maxEdgeCountToFind && (probability(1 - dropoutRate) || programExecutionQueue.isEmpty) { 
+            if val != 0 && val <= maxEdgeCountToFind && (probability(1 - dropoutRate) || programExecutionQueue.isEmpty) {
                 if let prog = edgeMap[UInt32(i)] {
                     programExecutionQueue.append(prog)
-                } else {
-                    logger.warning("Failed to find edge in map")
                 }
             }
         }
+
+        // Determine how many edges have been leaked and produce a warning if over 1% of total edges
+        // Done as second pass for code clarity
+        // Testing on v8 shows that < 0.01% of total edges are leaked
+        // Potential causes:
+        //  - Libcoverage iterates over the edge map twice, once for new coverage, and once for edge counts.
+        //      This occurs while the target JS engine is running, so the coverage may be slightly different between the passes
+        //      However, this is unlikely to be useful coverage for the purposes of Fuzzilli
+        //  - Crashing samples may find new coverage and thus increment counters, but are not added to the corpus
+        var missingEdgeCount = 0
+        for (i, val) in edgeCounts.enumerated() {
+            if val != 0 && edgeMap[UInt32(i)] == nil {
+                missingEdgeCount += 1
+            }
+        }
+        if missingEdgeCount > (edgeCounts.count / 100) {
+            let missingPercentage = Double(missingEdgeCount) / Double(edgeCounts.count) * 100.0
+            logger.warning("\(missingPercentage)% of total edges have been leaked")
+        }
+
         if programExecutionQueue.count == 0 {
             logger.fatal("Program regeneration failed")
         }
         logger.info("Markov Corpus selected \(programExecutionQueue.count) new programs")
     }
 
-    // Note that this exports all programs, but does not include edge counts
-    public func exportState() throws -> Data {
-        let res = try encodeProtobufCorpus(allIncludedPrograms)
-        logger.info("Successfully serialized \(allIncludedPrograms.count) programs")
-        return res
-    }
-    
-    public func importState(_ buffer: Data) throws {
-        let newPrograms = try decodeProtobufCorpus(buffer)
-
-        covEvaluator.resetState()
-
-        for prog in newPrograms { 
-            guard prog.size > 0 else { continue }
-            if let aspects = execAndEvalProg(prog) {
-                add(prog, aspects)
-            }
-        }
-    }
-
     public var size: Int {
         return allIncludedPrograms.count
     }
-    
+
     public var isEmpty: Bool {
         return size == 0
     }
@@ -195,22 +181,28 @@ public class MarkovCorpus: ComponentBase, Corpus {
         return allIncludedPrograms[index]
     }
 
+    public func allPrograms() -> [Program] {
+        return allIncludedPrograms
+    }
+
+    // We don't currently support fast state synchronization.
+    // Instead, we need to import every sample separately (potentially
+    // multiple times for determinism) to determine the edges it triggers.
+    public var supportsFastStateSynchronization: Bool {
+        return false
+    }
+
+    // Note that this exports all programs, but does not include edge counts
+    public func exportState() throws -> Data {
+        fatalError("Not Supported")
+    }
+
+    public func importState(_ buffer: Data) throws {
+        fatalError("Not Supported")
+    }
+
     // Ramp up the number of times a sample is used as the initial seed over time
     private func energyBase() -> UInt32 {
-        return UInt32(Foundation.log10(Float(totalExecs))) + 1 
+        return UInt32(Foundation.log10(Float(totalExecs))) + 1
     }
-
-
-    // A simplified version based on the FuzzEngine functionality
-    // Implemented here in order to obtain coverage data without dispatching the events for having
-    // found new coverage
-    private func execAndEvalProg(_ program: Program) -> ProgramAspects? {
-        let execution = fuzzer.execute(program, withTimeout: fuzzer.config.timeout * 2)
-        if execution.outcome == .succeeded {
-            return fuzzer.evaluator.evaluate(execution)
-        }
-        return nil
-    }
-
-
 }

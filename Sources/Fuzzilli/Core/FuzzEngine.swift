@@ -20,14 +20,14 @@ public protocol FuzzEngine: ComponentBase {
 }
 
 extension FuzzEngine {
-    public func execute(_ program: Program, stats: inout ProgramGeneratorStats) -> ExecutionOutcome {
+    public func execute(_ program: Program, stats: inout ProgramProducerStats) -> ExecutionOutcome {
         fuzzer.dispatchEvent(fuzzer.events.ProgramGenerated, data: program)
 
         let execution = fuzzer.execute(program)
 
         switch execution.outcome {
             case .crashed(let termsig):
-                fuzzer.processCrash(program, withSignal: termsig, withStderr: execution.stderr, origin: .local)
+                fuzzer.processCrash(program, withSignal: termsig, withStderr: execution.stderr, withStdout: execution.stdout, origin: .local)
 
             case .succeeded:
                 fuzzer.dispatchEvent(fuzzer.events.ValidProgramFound, data: program)
@@ -53,40 +53,14 @@ extension FuzzEngine {
 
         if fuzzer.config.enableDiagnostics {
             // Ensure deterministic execution behaviour. This can for example help detect and debug REPRL issues.
-            ensureDeterministicExecutionBehaviourForDiagnostic(of: program, firstExecution: execution)
+            ensureDeterministicExecutionOutcomeForDiagnostic(of: program)
         }
 
         return execution.outcome
     }
 
-    /// Generate some basic Prefix such that samples have some basic types available.
-    public func generateProgramPrefix() -> Program {
-        let b = fuzzer.makeBuilder(mode: .conservative)
-
-        let programPrefixGenerators: [CodeGenerator] = [
-            CodeGenerators.get("IntegerGenerator"),
-            CodeGenerators.get("StringGenerator"),
-            CodeGenerators.get("BuiltinGenerator"),
-            CodeGenerators.get("FloatArrayGenerator"),
-            CodeGenerators.get("IntArrayGenerator"),
-            CodeGenerators.get("ArrayGenerator"),
-            CodeGenerators.get("ObjectGenerator"),
-            CodeGenerators.get("IfGenerator"),
-            CodeGenerators.get("MethodCallGenerator"),
-        ]
-
-        for generator in programPrefixGenerators {
-            b.run(generator)
-        }
-
-        let prefixProgram = b.finalize()
-
-        fuzzer.updateTypeInformation(for: prefixProgram)
-
-        return prefixProgram
-    }
-
-    private func ensureDeterministicExecutionBehaviourForDiagnostic(of program: Program, firstExecution execution1: Execution) {
+    private func ensureDeterministicExecutionOutcomeForDiagnostic(of program: Program) {
+        let execution1 = fuzzer.execute(program)
         let stdout1 = execution1.stdout, stderr1 = execution1.stderr
         let execution2 = fuzzer.execute(program)
         switch (execution1.outcome, execution2.outcome) {

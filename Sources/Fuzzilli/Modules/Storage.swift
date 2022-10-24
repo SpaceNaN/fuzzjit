@@ -64,7 +64,7 @@ public class Storage: Module {
         }
 
         fuzzer.registerEventListener(for: fuzzer.events.CrashFound) { ev in
-            let filename = "program_\(self.formatDate())_\(ev.program.id)_\(ev.behaviour.rawValue)_\(ev.signal)"
+            let filename = "program_\(self.formatDate())_\(ev.program.id)_\(ev.behaviour.rawValue)"
             if ev.isUnique {
                 self.storeProgram(ev.program, as: filename, in: self.crashesDir)
             } else {
@@ -112,7 +112,7 @@ public class Storage: Module {
             logger.error("Failed to write file \(url): \(error)")
         }
     }
-    
+
     private func createFile(_ url: URL, withContent content: Data) {
         do {
             try content.write(to: url)
@@ -123,17 +123,12 @@ public class Storage: Module {
 
     private func storeProgram(_ program: Program, as filename: String, in directory: String) {
         // Always include comments when writing programs to disk
-        var options = LiftingOptions.includeComments
-
-        // If enabled, also include type information
-        if fuzzer.config.inspection.contains(.types) {
-            options.insert(.dumpTypes)
-        }
+        let options = LiftingOptions.includeComments
 
         let code = fuzzer.lifter.lift(program, withOptions: options)
         let url = URL(fileURLWithPath: "\(directory)/\(filename).js")
         createFile(url, withContent: code)
-        
+
         // Also store the FuzzIL program in its protobuf format. This can later be imported again or inspected using the FuzzILTool
         do {
             let pb = try program.asProtobuf().serializedData()

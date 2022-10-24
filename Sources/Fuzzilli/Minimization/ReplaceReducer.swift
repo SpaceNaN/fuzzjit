@@ -12,17 +12,75 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Attemplts to replace code snippets with other, potentially shorter snippets.
+// Attempts to replace "complex" instructions with simpler instructions.
 struct ReplaceReducer: Reducer {
-    func reduce(_ code: inout Code, with verifier: ReductionVerifier) {
+    func reduce(_ code: inout Code, with tester: ReductionTester) {
+        simplifyFunctionDefinitions(&code, with: tester)
+        simplifySimpleInstructions(&code, with: tester)
+    }
+
+    func simplifyFunctionDefinitions(_ code: inout Code, with tester: ReductionTester) {
+        // Try to turn "fancy" functions into plain functions
+        for group in Blocks.findAllBlockGroups(in: code) {
+            guard let begin = group.begin.op as? BeginAnyFunction else { continue }
+            assert(group.end.op is EndAnyFunction)
+            if begin is BeginPlainFunction { continue }
+
+            let newBegin = Instruction(BeginPlainFunction(parameters: begin.parameters, isStrict: begin.isStrict), inouts: group.begin.inouts)
+            let newEnd = Instruction(EndPlainFunction())
+            tester.tryReplacements([(group.head, newBegin), (group.tail, newEnd)], in: &code)
+        }
+    }
+
+    func simplifySimpleInstructions(_ code: inout Code, with tester: ReductionTester) {
+        // Miscellaneous simplifications, mostly turning SomeOpWithSpread into SomeOp since spread operations are less "mutation friendly" (somewhat low value, high chance of producing invalid code)
         for instr in code {
+            var newOp: Operation? = nil
             switch instr.op {
+            case let op as CreateObjectWithSpread:
+                if op.numSpreads == 0 {
+                    newOp = CreateObject(propertyNames: op.propertyNames)
+                }
+            case let op as CreateArrayWithSpread:
+                newOp = CreateArray(numInitialValues: op.numInputs)
+            case let op as CallFunctionWithSpread:
+                newOp = CallFunction(numArguments: op.numArguments)
+            case let op as ConstructWithSpread:
+                newOp = Construct(numArguments: op.numArguments)
+            case let op as CallMethodWithSpread:
+                newOp = CallMethod(methodName: op.methodName, numArguments: op.numArguments)
+            case let op as CallComputedMethodWithSpread:
+                newOp = CallComputedMethod(numArguments: op.numArguments)
             case let op as Construct:
-                // Try replacing with a simple call
-                let newOp = CallFunction(numArguments: op.numArguments)
-                verifier.tryReplacing(instructionAt: instr.index, with: Instruction(newOp, inouts: instr.inouts), in: &code)
+                // Prefer simple function calls over constructor calls if there's no difference
+                newOp = CallFunction(numArguments: op.numArguments)
+            // Prefer non strict functions over strict ones
+            case let op as BeginPlainFunction:
+                if op.isStrict {
+                    newOp = BeginPlainFunction(parameters: op.parameters, isStrict: false)
+                }
+            case let op as BeginArrowFunction:
+                if op.isStrict {
+                    newOp = BeginArrowFunction(parameters: op.parameters, isStrict: false)
+                }
+            case let op as BeginGeneratorFunction:
+                if op.isStrict {
+                    newOp = BeginGeneratorFunction(parameters: op.parameters, isStrict: false)
+                }
+            case let op as BeginAsyncFunction:
+                if op.isStrict {
+                    newOp = BeginAsyncFunction(parameters: op.parameters, isStrict: false)
+                }
+            case let op as BeginAsyncGeneratorFunction:
+                if op.isStrict {
+                    newOp = BeginAsyncGeneratorFunction(parameters: op.parameters, isStrict: false)
+                }
             default:
                 break
+            }
+
+            if let op = newOp {
+                tester.tryReplacing(instructionAt: instr.index, with: Instruction(op, inouts: instr.inouts), in: &code)
             }
         }
     }

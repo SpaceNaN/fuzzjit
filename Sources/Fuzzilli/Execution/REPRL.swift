@@ -22,7 +22,7 @@ public class REPRL: ComponentBase, ScriptRunner {
     private let maxExecsBeforeRespawn = 1000
 
     /// Commandline arguments for the executable
-    private let processArguments: [String]
+    public private(set) var processArguments: [String]
 
     /// Environment variables for the child process
     private var env = [String]()
@@ -62,7 +62,7 @@ public class REPRL: ComponentBase, ScriptRunner {
         let argv = convertToCArray(processArguments)
         let envp = convertToCArray(env)
 
-        if reprl_initialize_context(reprlContext, argv, envp, /* capture_stdout: */ fuzzer.config.enableDiagnostics ? 1 : 0, /* capture stderr: */ 1) != 0 {
+        if reprl_initialize_context(reprlContext, argv, envp, /* capture stdout */ 1, /* capture stderr: */ 1) != 0 {
             logger.fatal("Failed to initialize REPRL context: \(String(cString: reprl_get_last_error(reprlContext)))")
         }
 
@@ -116,7 +116,7 @@ public class REPRL: ComponentBase, ScriptRunner {
                 if fuzzer.config.enableDiagnostics {
                     fuzzer.dispatchEvent(fuzzer.events.DiagnosticsEvent, data: (name: "REPRLFail", content: scriptBuffer))
                 }
-                sleep(1)
+                Thread.sleep(forTimeInterval: 1)
                 status = reprl_execute(reprlContext, $0, UInt64(script.count), UInt64(timeout), &execTime, 1)
             }
         }
