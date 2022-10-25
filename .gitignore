@@ -1,1 +1,3 @@
 .build/*
+v8/*
+fuzzjit_v8.txt

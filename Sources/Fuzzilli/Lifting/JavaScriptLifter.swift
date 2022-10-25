@@ -76,10 +76,16 @@ public class JavaScriptLifter: Lifter {
         }
 
         w.emitBlock(prefix)
+        var returnArr = [(Int,Int)]()
+        var returnFlag = true
 
         let varDecl = version == .es6 ? "let" : "var"
         let constDecl = version == .es6 ? "const" : "var"
         func decl(_ v: Variable) -> String {
+            if returnFlag && (w.getCurrentIndention() == 0){
+                returnArr.append((Int,Int)(v.number,w.getCurrentIndention()))
+            }
+            returnFlag = true
             if analyzer.numAssignments(of: v) == 1 {
                 return "\(constDecl) \(v)"
             } else {
@@ -173,12 +179,15 @@ public class JavaScriptLifter: Lifter {
 
             switch instr.op {
             case let op as LoadInteger:
+                returnFlag = false
                 output = NumberLiteral.new(String(op.value))
 
             case let op as LoadBigInt:
+                returnFlag = false
                 output = NumberLiteral.new(String(op.value) + "n")
 
             case let op as LoadFloat:
+                returnFlag = false
                 if op.value.isNaN {
                     output = Identifier.new("NaN")
                 } else if op.value.isEqual(to: -Double.infinity) {
@@ -190,28 +199,36 @@ public class JavaScriptLifter: Lifter {
                 }
 
             case let op as LoadString:
+                returnFlag = false
                 output = Literal.new() <> "\"" <> op.value <> "\""
 
             case let op as LoadRegExp:
+                returnFlag = false
                 let flags = op.flags.asString()
                 output = RegExpLiteral.new() <> "/" <> op.value <> "/" <> flags
 
             case let op as LoadBoolean:
+                returnFlag = false
                 output = Literal.new(op.value ? "true" : "false")
 
             case is LoadUndefined:
+                returnFlag = false
                 output = Identifier.new("undefined")
 
             case is LoadNull:
+                returnFlag = false
                 output = Literal.new("null")
 
             case is LoadThis:
+                returnFlag = false
                 output = Literal.new("this")
 
             case is LoadArguments:
+                returnFlag = false
                 output = Literal.new("arguments")
 
             case let op as CreateObject:
+                returnFlag = false
                 var properties = [String]()
                 for (index, propertyName) in op.propertyNames.enumerated() {
                     properties.append("\"" + propertyName + "\"" + ":" + input(index))
@@ -219,6 +236,7 @@ public class JavaScriptLifter: Lifter {
                 output = ObjectLiteral.new("{" + properties.joined(separator: ",") + "}")
 
             case is CreateArray:
+                returnFlag = false
                 // When creating arrays, treat undefined elements as holes. This also relies on literals always being inlined.
                 var elems = instr.inputs.map({ let text = expr(for: $0).text; return text == "undefined" ? "" : text }).joined(separator: ",")
                 if elems.last == "," || (instr.inputs.count==1 && elems=="") {
@@ -228,6 +246,7 @@ public class JavaScriptLifter: Lifter {
                 output = ArrayLiteral.new("[" + elems + "]")
 
             case let op as CreateObjectWithSpread:
+                returnFlag = false
                 var properties = [String]()
                 for (index, propertyName) in op.propertyNames.enumerated() {
                     properties.append("\"" + propertyName + "\"" + ":" + input(index))
@@ -239,6 +258,7 @@ public class JavaScriptLifter: Lifter {
                 output = ObjectLiteral.new("{" + properties.joined(separator: ",") + "}")
 
             case let op as CreateArrayWithSpread:
+                returnFlag = false
                 var elems = [String]()
                 for (i, v) in instr.inputs.enumerated() {
                     if op.spreads[i] {
@@ -256,6 +276,7 @@ public class JavaScriptLifter: Lifter {
                 output = ArrayLiteral.new("[" + elemString + "]")
 
             case let op as CreateTemplateString:
+                returnFlag = false
                 assert(!op.parts.isEmpty)
                 assert(op.parts.count == instr.numInputs + 1)
                 var parts = [op.parts[0]]
@@ -268,22 +289,26 @@ public class JavaScriptLifter: Lifter {
                 output = Literal.new("\(escapeSequence)`" + parts.joined() + "\(escapeSequence)`")
 
             case let op as LoadBuiltin:
+                returnFlag = false
                 output = Identifier.new(op.builtinName)
 
             case let op as LoadProperty:
                 output = MemberExpression.new() <> input(0) <> "." <> op.propertyName
 
             case let op as StoreProperty:
+                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let dest = MemberExpression.new() <> input(0) <> "." <> op.propertyName
                 let expr = AssignmentExpression.new() <> dest <> " = " <> input(1)
                 w.emit(expr)
 
             case let op as StorePropertyWithBinop:
+                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let dest = MemberExpression.new() <> input(0) <> "." <> op.propertyName
                 let expr = AssignmentExpression.new() <> dest <> " \(op.op.token)= " <> input(1)
                 w.emit(expr)
 
             case let op as DeleteProperty:
+                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let target = MemberExpression.new() <> input(0) <> "." <> op.propertyName
                 output = UnaryExpression.new() <> "delete " <> target
 
@@ -291,16 +316,19 @@ public class JavaScriptLifter: Lifter {
                 output = MemberExpression.new() <> input(0) <> "[" <> op.index <> "]"
 
             case let op as StoreElement:
+                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let dest = MemberExpression.new() <> input(0) <> "[" <> op.index <> "]"
                 let expr = AssignmentExpression.new() <> dest <> " = " <> input(1)
                 w.emit(expr)
 
             case let op as StoreElementWithBinop:
+                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let dest = MemberExpression.new() <> input(0) <> "[" <> op.index <> "]"
                 let expr = AssignmentExpression.new() <> dest <> " \(op.op.token)= " <> input(1)
                 w.emit(expr)
 
             case let op as DeleteElement:
+                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let target = MemberExpression.new() <> input(0) <> "[" <> op.index <> "]"
                 output = UnaryExpression.new() <> "delete " <> target
 
@@ -385,6 +413,7 @@ public class JavaScriptLifter: Lifter {
                 output = CallExpression.new() <> input(0) <> "(" <> liftCallArguments(instr.variadicInputs, spreading: op.spreads) <> ")"
 
             case is Construct:
+                returnFlag = false
                 output = NewExpression.new() <> "new " <> input(0) <> "(" <> liftCallArguments(instr.variadicInputs) <> ")"
 
             case let op as ConstructWithSpread:
@@ -424,6 +453,7 @@ public class JavaScriptLifter: Lifter {
                 w.emit("\(decl(instr.output)) = \(input(0));")
 
             case is Reassign:
+                returnArr.append((instr.input(0).number,w.getCurrentIndention()))
                 let expr = AssignmentExpression.new() <> input(0) <> " = " <> input(1)
                 w.emit(expr)
 
@@ -540,7 +570,7 @@ public class JavaScriptLifter: Lifter {
                 w.emit(expr)
 
             case is BeginIf:
-                w.emit("if (\(input(0))) {")
+                w.emit("if (opt_param)) {")
                 w.increaseIndentionLevel()
 
             case is BeginElse:
@@ -701,9 +731,19 @@ public class JavaScriptLifter: Lifter {
                     expressions[v] = expression
                     inlinedVars.insert(v)
                 } else {
+                    if returnFlag != false {
+                        returnFlag = true
+                    }
                     w.emit("\(decl(v)) = \(expression);")
                 }
             }
+        }
+
+        if returnArr.count != 0 && (w.getCurrentIndention() == 0 ){
+            //for item in returnArr{
+            //    w.emitComment(" v\(item.0) : \(item.1)")
+            //}
+             w.emit("return v\(returnArr[returnArr.count-1].0);")
         }
 
         w.emitBlock(suffix)

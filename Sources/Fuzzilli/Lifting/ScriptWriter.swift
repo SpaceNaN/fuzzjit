@@ -83,4 +83,8 @@ struct ScriptWriter {
         currentIndention -= self.indent
         assert(currentIndention >= 0)
     }
+
+    public func getCurrentIndention() -> Int{
+        return self.currentIndention;
+    }
 }
