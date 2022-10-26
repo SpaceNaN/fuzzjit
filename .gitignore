@@ -1,3 +1,5 @@
 .build/*
 v8/*
 fuzzjit_v8.txt
+jsc/*
+fuzzjit_jsc.txt
