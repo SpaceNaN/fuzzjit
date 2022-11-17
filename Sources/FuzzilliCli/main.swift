@@ -384,7 +384,7 @@ func makeFuzzer(for profile: Profile, with configuration: Configuration) -> Fuzz
         // (ConcatMutator(),                1),
         (OperationMutator(),                1),
         (CombineMutator(),                  1),
-        //(JITStressMutator(),                1),
+        (JITStressMutator(),                1),
     ])
 
     // Construct the fuzzer instance.
