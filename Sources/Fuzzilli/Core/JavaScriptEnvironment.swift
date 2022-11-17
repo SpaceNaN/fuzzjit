@@ -113,8 +113,8 @@ public class JavaScriptEnvironment: ComponentBase, Environment {
         registerObjectGroup(.jsBooleanConstructor)
         registerObjectGroup(.jsNumberConstructor)
         registerObjectGroup(.jsMathObject)
-        registerObjectGroup(.jsDate)
-        registerObjectGroup(.jsDateConstructor)
+        //registerObjectGroup(.jsDate)
+        //registerObjectGroup(.jsDateConstructor)
         registerObjectGroup(.jsJSONObject)
         registerObjectGroup(.jsReflectObject)
         registerObjectGroup(.jsArrayBufferConstructor)
@@ -1064,7 +1064,7 @@ public extension ObjectGroup {
             "max"    : [.anything...] => .unknown,
             "min"    : [.anything...] => .unknown,
             "pow"    : [.anything, .anything] => .number,
-            "random" : [] => .number,
+            //"random" : [] => .number,
             "round"  : [.anything] => .number,
             "sign"   : [.anything] => .number,
             "sin"    : [.anything] => .number,
