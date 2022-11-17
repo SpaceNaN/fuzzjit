@@ -149,3 +149,26 @@ When the version does not match, the user needs to manualy apply the patch.
 ```
 swift run -c release FuzzilliCli --profile=spidermonkey --timeout=500 --storagePath=./spidermonkey/ /path/to/gecko-dev/js/src/fuzzbuild_OPT.OBJ/dist/bin/js
 ```
+
+## Fuzzing ChakraCore
+
+To fuzz ChakraCore with FuzzJIT.
+
+1. download ChakraCore source code.
+```
+git clone https://github.com/chakra-core/ChakraCore
+```
+2. Apply Targets/ChakraCore/Patches/*.
+
+This step will be a little bit tricky.
+
+When the version does not match, the user needs to manualy apply the patch.
+
+3. Run the Targets/ChakraCore/fuzzbuild.sh script in the directory of the ChakraCore checkout.
+
+4. FuzzBuild/Debug/ch will be the JavaScript shell for the fuzzer.
+
+5. fuzz ChakraCore.
+```
+swift run -c release FuzzilliCli --profile=chakra --timeout=500 --storagePath=./ch/ /path/to/ChakraCore/FuzzBuild/Debug/ch
+```

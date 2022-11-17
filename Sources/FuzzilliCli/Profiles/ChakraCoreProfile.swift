@@ -82,7 +82,7 @@ let chakraProfile = Profile(
                   }
                   return deepObjectEquals(a, b);
                 }
-
+                
                 function opt(opt_param){
                 """,
 

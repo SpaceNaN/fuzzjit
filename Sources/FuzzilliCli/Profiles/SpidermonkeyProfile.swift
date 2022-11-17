@@ -126,7 +126,7 @@ let spidermonkeyProfile = Profile(
                 }
                 let jit_a0 = opt(true);
                 let jit_a0_0 = opt(false);
-                for(let i=0;i<0x100;i++){opt(false);}
+                for(let i=0;i<0x50;i++){opt(false);}
                 let jit_a2 = opt(true);
                 if (jit_a0 === undefined && jit_a2 === undefined) {
                     opt(true);
@@ -142,7 +142,7 @@ let spidermonkeyProfile = Profile(
     crashTests: ["fuzzilli('FUZZILLI_CRASH', 0)", "fuzzilli('FUZZILLI_CRASH', 1)", "fuzzilli('FUZZILLI_CRASH', 2)"],
 
     additionalCodeGenerators: [
-        (ForceSpidermonkeyIonGenerator, 10),
+        //(ForceSpidermonkeyIonGenerator, 10),
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([]),
@@ -150,10 +150,11 @@ let spidermonkeyProfile = Profile(
     disabledCodeGenerators: [],
 
     additionalBuiltins: [
-        "gc"            : .function([] => .undefined),
-        "enqueueJob"    : .function([.function()] => .undefined),
-        "drainJobQueue" : .function([] => .undefined),
-        "bailout"       : .function([] => .undefined),
+      :
+        //"gc"            : .function([] => .undefined),
+        //"enqueueJob"    : .function([.function()] => .undefined),
+        //"drainJobQueue" : .function([] => .undefined),
+        //"bailout"       : .function([] => .undefined),
 
     ]
 )

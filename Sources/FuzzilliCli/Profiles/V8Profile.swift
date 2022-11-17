@@ -232,10 +232,10 @@ fileprivate let VerifyTypeTemplate = ProgramTemplate("VerifyTypeTemplate") { b i
 let v8Profile = Profile(
     getProcessArguments: { (randomizingArguments: Bool) -> [String] in
         var args = [
-            "--expose-gc",
+            //"--expose-gc",
             "--future",
             "--harmony",
-            "--assert-types",
+            //"--assert-types",
             "--harmony-rab-gsab",
             "--allow-natives-syntax",
             "--interrupt-budget=1000",
@@ -273,10 +273,11 @@ let v8Profile = Profile(
     processEnv: [:],
 
     codePrefix: """
-                 function classOf(object) {
+                function classOf(object) {
                    var string = Object.prototype.toString.call(object);
                    return string.substring(8, string.length - 1);
                 }
+
                 function deepObjectEquals(a, b) {
                   var aProps = Object.keys(a);
                   aProps.sort();
@@ -292,23 +293,17 @@ let v8Profile = Profile(
                   }
                   return true;
                 }
+
                 function deepEquals(a, b) {
                   if (a === b) {
                     if (a === 0) return (1 / a) === (1 / b);
                     return true;
                   }
                   if (typeof a != typeof b) return false;
-                  if (typeof a == 'number') return (isNaN(a) && isNaN(b)) || (a!=b);
-                  if (typeof a == 'string') return a.length == 55 && a.toString().search(" GMT") !== -1;
+                  if (typeof a == 'number') return (isNaN(a) && isNaN(b)) || (a===b);
                   if (typeof a !== 'object' && typeof a !== 'function' && typeof a !== 'symbol') return false;
                   var objectClass = classOf(a);
-                  if (objectClass !== classOf(b)) return false;
-                  if (objectClass === 'RegExp') {
-                    return (a.toString() === b.toString());
-                  }
-                  if (objectClass === 'Function') return false;
                   if (objectClass === 'Array') {
-                    var elementCount = 0;
                     if (a.length != b.length) {
                       return false;
                     }
@@ -322,6 +317,7 @@ let v8Profile = Profile(
                     return (a.toString() === b.toString());
                   }
                   if (objectClass === 'Function') return true;
+                  
                   if (objectClass == 'String' || objectClass == 'Number' ||
                       objectClass == 'Boolean' || objectClass == 'Date') {
                     if (a.valueOf() !== b.valueOf()) return false;
@@ -340,7 +336,7 @@ let v8Profile = Profile(
                 let jit_a1 = opt(true);
                 %OptimizeFunctionOnNextCall(opt);
                 let jit_a2 = opt(false);
-                if (jit_a0 === undefined && jit_a1 === undefined) {
+                if (jit_a0 === undefined && jit_a2 === undefined) {
                     opt(true);
                 } else {
                     if (jit_a0_0===jit_a0 && !deepEquals(jit_a0, jit_a2)) {
@@ -354,21 +350,22 @@ let v8Profile = Profile(
     crashTests: ["fuzzilli('FUZZILLI_CRASH', 0)", "fuzzilli('FUZZILLI_CRASH', 1)", "fuzzilli('FUZZILLI_CRASH', 2)"],
 
     additionalCodeGenerators: [
-        (ForceV8TurbofanGenerator,      10),
-        (TurbofanVerifyTypeGenerator,   10),
-        (ResizableArrayBufferGenerator, 10),
-        (SerializeDeserializeGenerator, 10),
+        //(ForceV8TurbofanGenerator,      10),
+        //(TurbofanVerifyTypeGenerator,   10),
+        //(ResizableArrayBufferGenerator, 10),
+        //(SerializeDeserializeGenerator, 10),
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([
-        (MapTransitionsTemplate, 1),
-        (VerifyTypeTemplate, 1)
+        //(MapTransitionsTemplate, 1),
+        //(VerifyTypeTemplate, 1)
     ]),
 
     disabledCodeGenerators: [],
 
     additionalBuiltins: [
-        "gc"                                            : .function([] => .undefined),
-        "d8"                                            : .object(),
+        :
+        //"gc"                                            : .function([] => .undefined),
+        //"d8"                                            : .object(),
     ]
 )

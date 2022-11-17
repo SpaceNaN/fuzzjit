@@ -120,6 +120,7 @@ let jscProfile = Profile(
 
     codeSuffix: """
                 }
+                let gflag = true;
                 let jit_a0 = opt(true);
                 let jit_a0_0 = opt(false);
                 for(let i=0;i<0x10;i++){opt(false);}
@@ -128,24 +129,15 @@ let jscProfile = Profile(
                     opt(true);
                 } else {
                     if (jit_a0_0===jit_a0 && !deepEquals(jit_a0, jit_a2)) {
-                        fuzzilli('FUZZILLI_CRASH', 0);
+                        gflag = false;
                     }
                 }
-                for(let i=0;i<0x50;i++){opt(false);}
-                let jit_a3 = opt(true);
-                if (jit_a0 === undefined && jit_a3 === undefined) {
-                    opt(true);
-                } else {
-                    if (jit_a0_0===jit_a0 && !deepEquals(jit_a0, jit_a3)) {
-                        fuzzilli('FUZZILLI_CRASH', 0);
-                    }
-                }
-                for(let i=0;i<0x100;i++){opt(false);}
+                for(let i=0;i<0x200;i++){opt(false);}
                 let jit_a4 = opt(true);
                 if (jit_a0 === undefined && jit_a4 === undefined) {
                     opt(true);
                 } else {
-                    if (jit_a0_0===jit_a0 && !deepEquals(jit_a0, jit_a4)) {
+                    if (gflag && jit_a0_0===jit_a0 && !deepEquals(jit_a0, jit_a4)) {
                         fuzzilli('FUZZILLI_CRASH', 0);
                     }
                 }
@@ -156,8 +148,8 @@ let jscProfile = Profile(
     crashTests: ["fuzzilli('FUZZILLI_CRASH', 0)", "fuzzilli('FUZZILLI_CRASH', 1)", "fuzzilli('FUZZILLI_CRASH', 2)"],
 
     additionalCodeGenerators: [
-        (ForceDFGCompilationGenerator, 5),
-        (ForceFTLCompilationGenerator, 5),
+        //(ForceDFGCompilationGenerator, 5),
+        //(ForceFTLCompilationGenerator, 5),
     ],
 
     additionalProgramTemplates: WeightedList<ProgramTemplate>([]),
@@ -165,19 +157,20 @@ let jscProfile = Profile(
     disabledCodeGenerators: [],
 
     additionalBuiltins: [
-        "gc"                  : .function([] => .undefined),
-        "transferArrayBuffer" : .function([.object(ofGroup: "ArrayBuffer")] => .undefined),
-        "noInline"            : .function([.function()] => .undefined),
-        "noFTL"               : .function([.function()] => .undefined),
-        "createGlobalObject"  : .function([] => .object()),
-        "OSRExit"             : .function([] => .unknown),
-        "drainMicrotasks"     : .function([] => .unknown),
-        "runString"           : .function([.string] => .unknown),
-        "makeMasquerader"     : .function([] => .unknown),
-        "fullGC"              : .function([] => .undefined),
-        "edenGC"              : .function([] => .undefined),
-        "fiatInt52"           : .function([.number] => .number),
-        "forceGCSlowPaths"    : .function([] => .unknown),
-        "ensureArrayStorage"  : .function([] => .unknown),
+      :
+        //"gc"                  : .function([] => .undefined),
+        //"transferArrayBuffer" : .function([.object(ofGroup: "ArrayBuffer")] => .undefined),
+        //"noInline"            : .function([.function()] => .undefined),
+        //"noFTL"               : .function([.function()] => .undefined),
+        //"createGlobalObject"  : .function([] => .object()),
+        //"OSRExit"             : .function([] => .unknown),
+        //"drainMicrotasks"     : .function([] => .unknown),
+        //"runString"           : .function([.string] => .unknown),
+        //"makeMasquerader"     : .function([] => .unknown),
+        //"fullGC"              : .function([] => .undefined),
+        //"edenGC"              : .function([] => .undefined),
+        //"fiatInt52"           : .function([.number] => .number),
+        //"forceGCSlowPaths"    : .function([] => .unknown),
+        //"ensureArrayStorage"  : .function([] => .unknown),
     ]
 )
