@@ -375,7 +375,7 @@ func makeFuzzer(for profile: Profile, with configuration: Configuration) -> Fuzz
 
     /// The mutation fuzzer responsible for mutating programs from the corpus and evaluating the outcome.
     let mutators = WeightedList([
-        (ExplorationMutator(),              3),
+        //(ExplorationMutator(),              3),
         (CodeGenMutator(),                  2),
         (SpliceMutator(),                   2),
         (InputMutator(isTypeAware: false),  2),
