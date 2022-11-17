@@ -376,15 +376,15 @@ func makeFuzzer(for profile: Profile, with configuration: Configuration) -> Fuzz
     /// The mutation fuzzer responsible for mutating programs from the corpus and evaluating the outcome.
     let mutators = WeightedList([
         //(ExplorationMutator(),              3),
-        (CodeGenMutator(),                  2),
-        (SpliceMutator(),                   2),
+        //(CodeGenMutator(),                  2),
+        //(SpliceMutator(),                   2),
         (InputMutator(isTypeAware: false),  2),
         (InputMutator(isTypeAware: true),   1),
         // Can be enabled for experimental use, ConcatMutator is a limited version of CombineMutator
         // (ConcatMutator(),                1),
         (OperationMutator(),                1),
         (CombineMutator(),                  1),
-        (JITStressMutator(),                1),
+        //(JITStressMutator(),                1),
     ])
 
     // Construct the fuzzer instance.
